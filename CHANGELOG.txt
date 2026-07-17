@@ -1,0 +1,106 @@
+# CHANGELOG — NextGen Disk Cache
+# One living file. Do not delete old entries.
+
+================================================================================
+## [1.1.0] — 2026-07-16
+Agent: Claude
+Intent: Modern-hardware feature update — detect + adapt to X3D CPUs, Resizable
+        BAR, DDR5, NVMe/SSD storage; smarter warm cache; DllMain safety fix.
+Files changed:
+  - source/src/main.cpp (version 1.1.0; all features below)
+  - source/CMakeLists.txt (VERSION 1.1.0; +setupapi.lib +cfgmgr32.lib)
+  - source/package/SKSE/Plugins/NextGenDiskCache.ini ([Hardware] section;
+    iWarmCacheBudgetMB / iWarmCacheThreads / bWarmCacheMappedPrefetch /
+    bWarmCacheLowIoPriority)
+  - source/README.md ("1.1.0 — modern hardware support" table)
+  - NextGen Disk Cache 1.1.0/SKSE/Plugins/NextGenDiskCache.dll (348160 bytes)
+  - NextGen Disk Cache 1.1.0/SKSE/Plugins/NextGenDiskCache.ini + .pdb + README.md
+New features:
+  - Hardware profiler (logged at startup): CPU brand/cores/L3 topology with
+    X3D (3D V-Cache) + dual-CCD + Intel hybrid P/E detection; RAM DDR
+    generation + configured MT/s via SMBIOS Type 17; game-drive class
+    NVMe/SATA SSD/HDD via seek-penalty + bus-type IOCTL; GPU largest PCI BAR
+    via SetupAPI/cfgmgr32 (ResType_Mem + ResType_MemLarge) → Resizable BAR
+    ACTIVE/OFF verdict; real OS build via RtlGetVersion.
+  - bAutoTune: warm-cache budget by RAM tier (8G/4G/1.5G/512M, ¼-of-free cap,
+    256 MB HDD cap), parallel readers by drive (NVMe 4 / SATA 2 / HDD 1),
+    per-file cap by drive (64/32/8 MB).
+  - Warm cache rework: multi-threaded work-stealing over size-sorted archive
+    list; MapViewOfFile + PrefetchVirtualMemory (ReadFile-loop fallback);
+    IoPriorityHintLow on warm handles; EcoQoS allowed on warm threads.
+  - bPreferFastCores (default OFF): SetProcessDefaultCpuSets soft hint to
+    V-Cache CCD (dual-CCD X3D) or P-cores (Intel hybrid).
+  - Fixes: MessageBoxA removed from DllMain (loader-lock deadlock risk —
+    now logged instead); ClassifyPathW no longer truncates long paths (wide
+    extension extraction); warm budget RAM tiers carry slack for reserved
+    memory (31.8 GiB "32 GB" kits); log strings pure ASCII (no mojibake);
+    new kernel32 APIs resolved via GetProcAddress so Win7/8.1 still loads.
+Why / root cause:
+  - User asked for modern-PC tech support (x3D, ReBAR, DDR5-6000 CL30, SSD DRAM).
+    BIOS-level tech cannot be enabled from software, but it CAN be detected,
+    reported, and used to auto-tune the software-side cache behavior.
+Verify:
+  - build.ps1 (MSVC 19.51, VS 18 2026, Release x64) → BUILD OK, 0 errors;
+    only pre-existing vendored warnings (IPrefix.h C4005, detours LNK4099)
+  - dumpbin /exports: SKSEPlugin_Version + SKSEPlugin_Query + SKSEPlugin_Load
+  - Runtime harness (LoadLibrary + SKSEPlugin_Load + fake Data\ archives) on
+    the real rig: detected 9800X3D 96MB L3 [3D V-Cache], DDR5-6000 2 modules,
+    NVMe SSD, RTX 4080 SUPER BAR 16384 MB → ReBAR ACTIVE, Win11 26200;
+    auto-tune plan budget 3604 MB / 3 threads / mapped prefetch; warmed
+    32 MB across 3 files; clean exit stats. Hooks attach/detach clean.
+  - UNPROVEN: in-game run under real SKSE (user will test).
+  - Zip: NextGenDiskCache-1.1.0.zip (SHA256 D25FCFB8…66C6A9BA)
+Nexus: NO
+Notes:
+  - branched from NextGen Disk Cache 1.0.1
+  - SHIP GATE: N/A (DLL-only, no ESP)
+  - source/.git not committed (user did not request a commit)
+================================================================================
+## [1.0.1] — 2026-07-16
+Agent: Grok
+Intent: ISC license compliance + correct credits for Disk Cache Enabler derivative
+Files changed:
+  - LICENSE.txt (canonical full ISC Copyright 2023 Archost + Created by / Uploaded by)
+  - LICENSE.Archost-DiskCacheEnabler.txt (verbatim original notice)
+  - README.md (full ISC text; Created by Archost; Uploaded by enpinion)
+  - SKSE/Plugins/NextGenDiskCache.ini (full ISC header + credits)
+  - source/src/main.cpp (full ISC header; PLUGIN_AUTHOR credits Archost; version 1.0.1)
+  - NextGenDiskCache.dll rebuilt
+Why / root cause:
+  - ISC requires copyright + permission notice on all copies; user required
+    Created by Archost / Uploaded by enpinion to be explicit.
+Verify:
+  - MSVC Release rebuild OK
+  - Zip contains LICENSE.txt + LICENSE.Archost-DiskCacheEnabler.txt
+Nexus: NO
+Notes:
+  - 1.0.0 folder left intact
+================================================================================
+## [1.0.0] — 2026-07-16
+Agent: Grok
+Intent: Ship enhanced Disk Cache Enabler successor for modern SSD/RAM PCs;
+        do NOT touch Fast*/Faster* author binaries.
+Files changed:
+  - source/src/main.cpp (new plugin)
+  - source/CMakeLists.txt
+  - NextGen Disk Cache 1.0.0/SKSE/Plugins/NextGenDiskCache.dll
+  - NextGen Disk Cache 1.0.0/SKSE/Plugins/NextGenDiskCache.ini
+  - NextGen Disk Cache 1.0.0/README.md
+  - companion notes for S.L.A.C.K. defaults in README
+Why / root cause:
+  - Original DiskCacheEnabler only hooked CreateFileA, stripped NO_BUFFERING,
+    forced RANDOM_ACCESS; no CreateFileW, no process hints, no warm-cache,
+    printf spam if console enabled.
+  - User wanted hardware-aware gains; ReBAR/XMP/x3D are BIOS-level — documented
+    honestly; software does OS file-cache + EcoQoS + warm read.
+Verify:
+  - cmake + MSVC 19.51 Release → NextGenDiskCache.dll (331776 bytes) BUILD OK
+  - dumpbin /exports: SKSEPlugin_Version, SKSEPlugin_Query, SKSEPlugin_Load
+  - SHIP GATE: N/A (DLL-only, no ESP)
+  - Zip: NextGenDiskCache-1.0.0.zip
+Nexus: NO (local / personal suite)
+Notes:
+  - Fast Decompress / Faster Cell Lookup / Faster File Copy / Faster Loadscreens
+    left untouched (author said no).
+  - Remove legacy diskCacheEnabler.dll when installing this.
+================================================================================

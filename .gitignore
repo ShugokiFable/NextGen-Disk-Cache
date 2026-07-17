@@ -1,4 +1,4 @@
-build/
+﻿build/
 .vs/
 out/
 CMakeUserPresets.json
@@ -11,3 +11,7 @@ CMakeUserPresets.json
 *.dll
 *.ilk
 *.log
+package/SKSE/Plugins/*.dll
+package/SKSE/Plugins/*.pdb
+package/SKSE/Plugins/*.lib
+package/SKSE/Plugins/*.exp

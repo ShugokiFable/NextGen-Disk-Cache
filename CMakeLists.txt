@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(NextGenDiskCache VERSION 1.0.0 LANGUAGES CXX)
+project(NextGenDiskCache VERSION 1.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -14,7 +14,8 @@ target_link_directories(NextGenDiskCache PRIVATE
   ${CMAKE_SOURCE_DIR}/deps/libs/detours
 )
 
-target_link_libraries(NextGenDiskCache PRIVATE detours.lib)
+# setupapi + cfgmgr32: GPU BAR enumeration for Resizable BAR detection
+target_link_libraries(NextGenDiskCache PRIVATE detours.lib setupapi.lib cfgmgr32.lib)
 
 # Static CRT to avoid redistributable dependency on user machines
 set_property(TARGET NextGenDiskCache PROPERTY
