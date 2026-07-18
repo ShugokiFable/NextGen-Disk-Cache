@@ -76,8 +76,8 @@
 #define PLUGIN_NAME    "NextGen Disk Cache"
 // Original author first (Archost). Uploader on Nexus: enpinion.
 #define PLUGIN_AUTHOR  "Archost (mod: enpinion upload; derivative)"
-#define PLUGIN_VERSION ((1u << 16) | (2u << 8) | 1u) // 1.2.1
-#define PLUGIN_VERSION_STRING "1.2.1"
+#define PLUGIN_VERSION ((1u << 16) | (3u << 8) | 0u) // 1.3.0
+#define PLUGIN_VERSION_STRING "1.3.0"
 
 // ---------------------------------------------------------------------------
 // Settings (INI)
@@ -101,6 +101,7 @@ struct Settings {
 	bool hardwareProfile = true;
 	bool autoTune = true;
 	bool highEndMode = true;       // default target: modern X3D/DDR5/NVMe systems
+	int  gameDriveClass = 0;       // 0 = auto-detect, 1 = HDD, 2 = SATA SSD, 3 = NVMe SSD
 	bool preferFastCores = false;  // legacy whole-process hint, still opt-in
 	bool placeWarmThreadsOnBackgroundCores = true;
 
@@ -292,6 +293,8 @@ static void LoadIniFromPath(const char* path)
 			g_settings.hardwareProfile = ParseBool(val, true);
 		else if (_stricmp(key, "bAutoTune") == 0)
 			g_settings.autoTune = ParseBool(val, true);
+		else if (_stricmp(key, "iGameDriveClass") == 0)
+			g_settings.gameDriveClass = atoi(val);
 		else if (_stricmp(key, "bPreferFastCores") == 0)
 			g_settings.preferFastCores = ParseBool(val, false);
 		else if (_stricmp(key, "bEnableWarmCache") == 0)
@@ -1661,6 +1664,17 @@ SKSEAPI bool SKSEPlugin_Load(const SKSEInterface* skse)
 		DetectCpu(g_hw);
 		DetectRam(g_hw);
 		DetectGameDrive(g_hw);
+		// Optional INI override for setups auto-detection misreads (RAID
+		// arrays, Storage Spaces, some USB enclosures).
+		if (g_settings.gameDriveClass >= 1 && g_settings.gameDriveClass <= 3) {
+			const HardwareProfile::Drive prev = g_hw.drive;
+			g_hw.drive = g_settings.gameDriveClass == 3 ? HardwareProfile::Drive::NvmeSsd
+				: g_settings.gameDriveClass == 2 ? HardwareProfile::Drive::SataSsd
+				: HardwareProfile::Drive::HDD;
+			if (g_hw.drive != prev)
+				Log("Game drive override: %s -> %s (iGameDriveClass=%d)",
+					DriveName(prev), DriveName(g_hw.drive), g_settings.gameDriveClass);
+		}
 		DetectGpuBars(g_hw);
 		DetectOs(g_hw);
 		LogHardwareProfile(g_hw);

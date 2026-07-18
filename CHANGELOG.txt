@@ -1,4 +1,28 @@
 ================================================================================
+## [1.3.0] - 2026-07-18
+Agent: Kimi
+Intent: Manual game-drive class override for RAID / Storage Spaces / USB setups.
+Root cause:
+  - Drive class comes from seek-penalty + bus-type IOCTLs on the game volume.
+    RAID0 NVMe, Storage Spaces, and some enclosures report a generic or RAID
+    bus type, so fast arrays fall back to the SATA SSD profile (or the HDD
+    profile if the controller reports a seek penalty): fewer warm readers and
+    a smaller per-file cap than the hardware could sustain.
+Changes:
+  - New [Hardware] iGameDriveClass: 0 auto (default), 1 HDD, 2 SATA SSD,
+    3 NVMe SSD. Applied right after detection and logged when it changes the
+    detected class.
+  - Override steers warm-cache auto-tune only (budget cap, per-file MB, reader
+    threads). The CreateFile cache policy is drive-class independent.
+  - Documented in all shipped INIs and README; validator pins the shipped
+    default to auto.
+Validation:
+  - Full build + validate_rc.py + package-release.ps1 gates PASS.
+  - Harness: iGameDriveClass=3 forces the NVMe profile; 0 leaves detection
+    untouched (regression check).
+================================================================================
+
+================================================================================
 ## [1.2.1] - 2026-07-18
 Agent: Kimi
 Intent: Compatibility hotfix for durability-focused save/cosave writers.

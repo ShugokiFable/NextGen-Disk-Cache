@@ -1,4 +1,4 @@
-# Build NextGenDiskCache 1.2.1 (DLL) into package\SKSE\Plugins.
+# Build NextGenDiskCache 1.3.0 (DLL) into package\SKSE\Plugins.
 # Robust across Visual Studio 2019/2022/2026: the CMake generator is derived
 # from whatever vswhere reports, and DirectStorage 1.3 is fetched via nuget.exe
 # when present or a direct nupkg download otherwise.
