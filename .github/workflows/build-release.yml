@@ -39,14 +39,14 @@ jobs:
       - name: Upload Nexus-ready artifact
         uses: actions/upload-artifact@v4
         with:
-          name: NextGenDiskCache-1.2.0-FOMOD
+          name: NextGenDiskCache-1.2.1-FOMOD
           path: |
-            dist/NextGenDiskCache-1.2.0-FOMOD.zip
-            dist/NextGenDiskCache-1.2.0-SHA256.txt
+            dist/NextGenDiskCache-1.2.1-FOMOD.zip
+            dist/NextGenDiskCache-1.2.1-SHA256.txt
 
       - name: Upload symbols separately
         uses: actions/upload-artifact@v4
         with:
-          name: NextGenDiskCache-1.2.0-symbols
+          name: NextGenDiskCache-1.2.1-symbols
           path: build/symbols/NextGenDiskCache.pdb
           if-no-files-found: warn

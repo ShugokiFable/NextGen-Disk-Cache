@@ -76,8 +76,8 @@
 #define PLUGIN_NAME    "NextGen Disk Cache"
 // Original author first (Archost). Uploader on Nexus: enpinion.
 #define PLUGIN_AUTHOR  "Archost (mod: enpinion upload; derivative)"
-#define PLUGIN_VERSION ((1u << 16) | (2u << 8) | 0u) // 1.2.0
-#define PLUGIN_VERSION_STRING "1.2.0"
+#define PLUGIN_VERSION ((1u << 16) | (2u << 8) | 1u) // 1.2.1
+#define PLUGIN_VERSION_STRING "1.2.1"
 
 // ---------------------------------------------------------------------------
 // Settings (INI)
@@ -361,7 +361,7 @@ static void LoadSettings()
 // ---------------------------------------------------------------------------
 // Path classification
 // ---------------------------------------------------------------------------
-enum class PathKind { Asset, LogOrTemp, Other };
+enum class PathKind { Asset, LogOrTemp, Save, Other };
 
 static PathKind ClassifyExt(const char* e)
 {
@@ -370,13 +370,19 @@ static PathKind ClassifyExt(const char* e)
 		strcmp(e, ".dmp") == 0 || strcmp(e, ".txt") == 0)
 		return PathKind::LogOrTemp;
 
+	// Save games and SKSE cosaves - durability-sensitive files whose writers
+	// deliberately choose their flags (e.g. S.L.A.C.K. uses unbuffered,
+	// write-through I/O for cosaves). Never rewrite these requests.
+	if (strcmp(e, ".skse") == 0 || strcmp(e, ".cosave") == 0 ||
+		strcmp(e, ".ess") == 0 || strcmp(e, ".bak") == 0)
+		return PathKind::Save;
+
 	// Game / mod assets that benefit from OS cache + random access
 	static const char* kAssets[] = {
 		".bsa", ".ba2", ".esm", ".esp", ".esl",
 		".nif", ".dds", ".hkx", ".tri", ".fuz", ".lip", ".xwm", ".wav",
 		".pex", ".psc", ".swf", ".gfx", ".seq",
 		".ini", ".json", ".bin", ".dat", ".db",
-		".skse", ".cosave", ".ess", ".bak",
 		nullptr
 	};
 	for (int i = 0; kAssets[i]; ++i) {
@@ -437,15 +443,16 @@ static PathKind ClassifyPathW(const wchar_t* path)
 
 static DWORD PatchFlags(DWORD flags, PathKind kind)
 {
+	// Save games / cosaves and log/temp files: honor the caller's flags exactly.
+	// Stripping NO_BUFFERING or forcing RANDOM_ACCESS here defeats deliberate
+	// durability designs (S.L.A.C.K. cosaves) and sequential dump/log writers.
+	if (kind == PathKind::Save || kind == PathKind::LogOrTemp)
+		return flags;
+
 	DWORD out = flags;
 	if (g_settings.stripNoBuffering && (out & FILE_FLAG_NO_BUFFERING)) {
 		out &= ~FILE_FLAG_NO_BUFFERING;
 		g_noBufferingStripped.fetch_add(1, std::memory_order_relaxed);
-	}
-
-	if (kind == PathKind::LogOrTemp && g_settings.leaveSequentialOnLogs) {
-		// Keep SEQUENTIAL_SCAN if the caller set it; do not force RANDOM_ACCESS.
-		return out;
 	}
 
 	if (g_settings.preferRandomAccessOnAssets &&

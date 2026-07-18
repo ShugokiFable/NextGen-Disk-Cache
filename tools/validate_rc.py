@@ -60,7 +60,7 @@ def validate_bundle() -> None:
                            cfile=str(pathlib.Path(td) / "apply_1_2.pyc"), doraise=True)
     ET.parse(ROOT / "fomod/info.xml")
     module = ET.parse(ROOT / "fomod/ModuleConfig.xml").getroot()
-    require(module.findtext("moduleName") == "NextGen Disk Cache 1.2.0", "wrong FOMOD version")
+    require(module.findtext("moduleName") == "NextGen Disk Cache 1.2.1", "wrong FOMOD version")
     groups = module.findall(".//group")
     require(len(groups) == 2, "FOMOD should contain profile and DirectStorage groups")
     require(all(g.attrib.get("type") == "SelectExactlyOne" for g in groups), "FOMOD choices must be exclusive")
@@ -96,7 +96,7 @@ def validate_bundle() -> None:
         require(token in packager, f"release packager missing {token}")
 
     workflow = (ROOT / ".github/workflows/build-release.yml").read_text(encoding="utf-8")
-    for token in ["windows-2022", "NuGet/setup-nuget@v2", "Microsoft.Direct3D.DirectStorage", "NextGenDiskCache-1.2.0-FOMOD.zip", "build/symbols/NextGenDiskCache.pdb"]:
+    for token in ["windows-2022", "NuGet/setup-nuget@v2", "Microsoft.Direct3D.DirectStorage", "NextGenDiskCache-1.2.1-FOMOD.zip", "build/symbols/NextGenDiskCache.pdb"]:
         require(token in workflow, f"workflow missing {token}")
     require("package-release.ps1 -SkipBuild" in workflow,
             "workflow does not use the validated release packager")

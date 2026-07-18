@@ -24,6 +24,10 @@ This project keeps that idea and adds:
 
 **Remove** the old `diskCacheEnabler.dll` if you install this — don’t run both.
 
+## 1.2.1 - save/cosave compatibility hotfix
+
+Save-related files (`.ess`, `.bak`, `.skse`, `.cosave`) were classified as ordinary game assets: their `FILE_FLAG_NO_BUFFERING` was stripped and `FILE_FLAG_RANDOM_ACCESS` was forced on their handles. Durability-focused writers such as S.L.A.C.K. (Save & Load Accelerator for SKSE Cosaves) deliberately open cosaves unbuffered and write-through. Save games, cosaves, logs, and temp files now keep their caller-selected flags exactly; the cache policy (no-buffering strip + random-access preference) applies only to real game assets.
+
 ## 1.2.0 - high-end scheduler and storage path
 
 Version 1.2 keeps the mod's high-end-PC focus while removing placebo behavior:

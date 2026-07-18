@@ -1,4 +1,25 @@
 ================================================================================
+## [1.2.1] - 2026-07-18
+Agent: Kimi
+Intent: Compatibility hotfix for durability-focused save/cosave writers.
+Root cause:
+  - 1.2.0 classified .ess/.bak/.skse/.cosave as game assets. PatchFlags then
+    stripped FILE_FLAG_NO_BUFFERING from every open and forced
+    FILE_FLAG_RANDOM_ACCESS on asset-classed handles - including SKSE cosave
+    handles opened by S.L.A.C.K., which deliberately uses unbuffered,
+    write-through, sector-aligned I/O for crash-safe cosave writes.
+Changes:
+  - New PathKind::Save (.ess/.bak/.skse/.cosave): caller flags left untouched.
+  - PathKind::LogOrTemp (.log/.tmp/.temp/.dmp/.txt) now also keeps its flags;
+    bLeaveSequentialOnLogs is subsumed by this wider leave-alone policy.
+  - Cache policy (no-buffering strip + random-access preference) now applies
+    only to true game assets and unclassified files.
+Validation:
+  - Full build + validate_rc.py + package-release.ps1 gates PASS.
+  - Harness load-path smoke test PASS on target rig.
+================================================================================
+
+================================================================================
 ## [1.2.0] - 2026-07-18
 Intent: High-end-first storage/scheduler update with truthful DirectStorage 1.3 support.
 Changes:
