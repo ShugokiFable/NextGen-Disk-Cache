@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
+  <moduleName>NextGen Disk Cache 1.2.0</moduleName>
+  <requiredInstallFiles>
+    <folder source="Core" destination="" priority="0" />
+  </requiredInstallFiles>
+  <installSteps order="Explicit">
+    <installStep name="Hardware profile">
+      <optionalFileGroups order="Explicit">
+        <group name="Choose one configuration" type="SelectExactlyOne">
+          <plugins order="Explicit">
+            <plugin name="High-End Auto-Tuned (Recommended)">
+              <description>For X3D or modern hybrid CPUs, 32-64+ GB RAM, and fast NVMe storage. Larger adaptive budgets, strided archive prefetch, RAM reserve protection, and background-core placement.</description>
+              <files><folder source="Profiles\HighEnd" destination="SKSE\Plugins" priority="10" /></files>
+              <typeDescriptor><type name="Recommended" /></typeDescriptor>
+            </plugin>
+            <plugin name="Balanced">
+              <description>Lower cache budgets and a longer startup delay for broader hardware compatibility.</description>
+              <files><folder source="Profiles\Balanced" destination="SKSE\Plugins" priority="10" /></files>
+              <typeDescriptor><type name="Optional" /></typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+    <installStep name="DirectStorage runtime">
+      <optionalFileGroups order="Explicit">
+        <group name="Bundle Microsoft DirectStorage 1.3" type="SelectExactlyOne">
+          <plugins order="Explicit">
+            <plugin name="Do not bundle runtime (Recommended)">
+              <description>The page-cache optimization does not require DirectStorage. Use this unless another mod already supplies the runtime or you are testing the experimental raw-read path.</description>
+              <typeDescriptor><type name="Recommended" /></typeDescriptor>
+            </plugin>
+            <plugin name="Install DirectStorage 1.3 runtime">
+              <description>Installs Microsoft's redistributable beside the SKSE plugin. The runtime is validated at startup, but the raw-read backend remains disabled until bDirectStorageWarmRead=1.</description>
+              <files><folder source="Optional\DirectStorage" destination="SKSE\Plugins" priority="20" /></files>
+              <typeDescriptor><type name="Optional" /></typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+  </installSteps>
+</config>

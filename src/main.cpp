@@ -1,4 +1,4 @@
-﻿// NextGen Disk Cache - SKSE64 plugin
+// NextGen Disk Cache - SKSE64 plugin
 // Modified derivative of "Disk Cache Enabler"
 //
 //   Created by:  Archost
@@ -48,6 +48,7 @@
 #include <mutex>
 #include <fstream>
 #include <algorithm>
+#include <memory>
 
 #include <Windows.h>
 #include <ShlObj.h>
@@ -68,14 +69,15 @@
 
 // Detours
 #include <detours/detours.h>
+#include "DirectStorageBackend.h"
 
 #define SKSEAPI extern "C" __declspec(dllexport)
 
 #define PLUGIN_NAME    "NextGen Disk Cache"
 // Original author first (Archost). Uploader on Nexus: enpinion.
 #define PLUGIN_AUTHOR  "Archost (mod: enpinion upload; derivative)"
-#define PLUGIN_VERSION ((1u << 16) | (1u << 8) | 0u) // 1.1.0
-#define PLUGIN_VERSION_STRING "1.1.0"
+#define PLUGIN_VERSION ((1u << 16) | (2u << 8) | 0u) // 1.2.0
+#define PLUGIN_VERSION_STRING "1.2.0"
 
 // ---------------------------------------------------------------------------
 // Settings (INI)
@@ -90,29 +92,42 @@ struct Settings {
 
 	bool disablePowerThrottling = true;
 	bool raiseMemoryPriority = true;
-	bool expandWorkingSet = true;
+	bool expandWorkingSet = false;
 	// Fraction of physical RAM allowed as max working set (0.10–0.75). 0 = skip.
 	double workingSetMaxFraction = 0.50;
 	// Min working set in MB (soft; 0 = leave Windows default min).
 	unsigned workingSetMinMB = 128;
 
-	bool hardwareProfile = true;   // detect + log; required for auto-tune
-	bool autoTune = true;          // scale warm cache from the profile
-	bool preferFastCores = false;  // OPT-IN: V-Cache CCD / P-core CPU-set hint
+	bool hardwareProfile = true;
+	bool autoTune = true;
+	bool highEndMode = true;       // default target: modern X3D/DDR5/NVMe systems
+	bool preferFastCores = false;  // legacy whole-process hint, still opt-in
+	bool placeWarmThreadsOnBackgroundCores = true;
 
 	bool enableWarmCache = true;
-	unsigned warmCacheDelaySecs = 8;
-	unsigned warmCacheMaxFiles = 256;
+	unsigned warmCacheDelaySecs = 12;
+	unsigned warmCacheMaxFiles = 512;
 	unsigned warmCacheBytesPerFileMB = 8;
 	unsigned warmCacheBudgetMB = 0;   // total budget; 0 = auto from profile
 	unsigned warmCacheThreads = 0;    // 0 = auto (NVMe 4 / SATA SSD 2 / HDD 1)
 	bool warmCacheMappedPrefetch = true;
 	bool warmCacheLowIoPriority = true;
-	unsigned warmCacheThreadPriority = THREAD_PRIORITY_LOWEST;
+	bool warmCacheStridedPrefetch = true;
+	unsigned warmCacheStrideMB = 256;
+	unsigned warmCacheReserveMB = 0; // 0 = automatic safety reserve
+	bool stopWarmCacheOnMemoryPressure = true;
+	int warmCacheThreadPriority = THREAD_PRIORITY_LOWEST;
+
+	bool directStorageProbe = true;
+	bool directStorageWarmRead = false; // experimental: raw read, not OS cache population
+	unsigned directStorageQueueCapacity = 128;
+	unsigned directStorageBatchMB = 64;
+	unsigned directStorageTimeoutMs = 30000;
 
 	bool logToFile = true;
 	bool logEveryOpen = false; // debug only - very spammy
-	bool logStatsOnExit = true;
+	bool logStatsOnExit = false; // retained for config compatibility; no loader-lock I/O
+	bool logStatsAfterWarm = true;
 };
 
 static Settings g_settings;
@@ -122,7 +137,7 @@ static std::atomic<bool> g_shutdown{false};
 static std::atomic<uint64_t> g_opensTotal{0};
 static std::atomic<uint64_t> g_opensPatched{0};
 static std::atomic<uint64_t> g_noBufferingStripped{0};
-static std::thread g_warmThread;
+static std::atomic<bool> g_warmStarted{false};
 static HMODULE g_selfModule = nullptr;
 static bool g_hookAttachFailed = false;
 
@@ -130,10 +145,12 @@ static bool g_hookAttachFailed = false;
 using PrefetchVirtualMemory_t = BOOL(WINAPI*)(HANDLE, ULONG_PTR, PWIN32_MEMORY_RANGE_ENTRY, ULONG);
 using GetSystemCpuSetInformation_t = BOOL(WINAPI*)(PSYSTEM_CPU_SET_INFORMATION, ULONG, PULONG, HANDLE, ULONG);
 using SetProcessDefaultCpuSets_t = BOOL(WINAPI*)(HANDLE, const ULONG*, ULONG);
+using SetThreadSelectedCpuSets_t = BOOL(WINAPI*)(HANDLE, const ULONG*, ULONG);
 using SetThreadInformation_t = BOOL(WINAPI*)(HANDLE, THREAD_INFORMATION_CLASS, LPVOID, DWORD);
 static PrefetchVirtualMemory_t g_pPrefetchVirtualMemory = nullptr;
 static GetSystemCpuSetInformation_t g_pGetSystemCpuSetInformation = nullptr;
 static SetProcessDefaultCpuSets_t g_pSetProcessDefaultCpuSets = nullptr;
+static SetThreadSelectedCpuSets_t g_pSetThreadSelectedCpuSets = nullptr;
 static SetThreadInformation_t g_pSetThreadInformation = nullptr;
 
 static void ResolveDynamicApis()
@@ -147,6 +164,8 @@ static void ResolveDynamicApis()
 		reinterpret_cast<GetSystemCpuSetInformation_t>(GetProcAddress(k32, "GetSystemCpuSetInformation"));
 	g_pSetProcessDefaultCpuSets =
 		reinterpret_cast<SetProcessDefaultCpuSets_t>(GetProcAddress(k32, "SetProcessDefaultCpuSets"));
+	g_pSetThreadSelectedCpuSets =
+		reinterpret_cast<SetThreadSelectedCpuSets_t>(GetProcAddress(k32, "SetThreadSelectedCpuSets"));
 	g_pSetThreadInformation =
 		reinterpret_cast<SetThreadInformation_t>(GetProcAddress(k32, "SetThreadInformation"));
 }
@@ -291,12 +310,36 @@ static void LoadIniFromPath(const char* path)
 			g_settings.warmCacheMappedPrefetch = ParseBool(val, true);
 		else if (_stricmp(key, "bWarmCacheLowIoPriority") == 0)
 			g_settings.warmCacheLowIoPriority = ParseBool(val, true);
+		else if (_stricmp(key, "bHighEndMode") == 0)
+			g_settings.highEndMode = ParseBool(val, true);
+		else if (_stricmp(key, "bPlaceWarmThreadsOnBackgroundCores") == 0)
+			g_settings.placeWarmThreadsOnBackgroundCores = ParseBool(val, true);
+		else if (_stricmp(key, "bWarmCacheStridedPrefetch") == 0)
+			g_settings.warmCacheStridedPrefetch = ParseBool(val, true);
+		else if (_stricmp(key, "iWarmCacheStrideMB") == 0)
+			g_settings.warmCacheStrideMB = (unsigned)atoi(val);
+		else if (_stricmp(key, "iWarmCacheReserveMB") == 0)
+			g_settings.warmCacheReserveMB = (unsigned)atoi(val);
+		else if (_stricmp(key, "bStopWarmCacheOnMemoryPressure") == 0)
+			g_settings.stopWarmCacheOnMemoryPressure = ParseBool(val, true);
+		else if (_stricmp(key, "bDirectStorageProbe") == 0)
+			g_settings.directStorageProbe = ParseBool(val, true);
+		else if (_stricmp(key, "bDirectStorageWarmRead") == 0)
+			g_settings.directStorageWarmRead = ParseBool(val, false);
+		else if (_stricmp(key, "iDirectStorageQueueCapacity") == 0)
+			g_settings.directStorageQueueCapacity = (unsigned)atoi(val);
+		else if (_stricmp(key, "iDirectStorageBatchMB") == 0)
+			g_settings.directStorageBatchMB = (unsigned)atoi(val);
+		else if (_stricmp(key, "iDirectStorageTimeoutMs") == 0)
+			g_settings.directStorageTimeoutMs = (unsigned)atoi(val);
 		else if (_stricmp(key, "bLogToFile") == 0)
 			g_settings.logToFile = ParseBool(val, true);
 		else if (_stricmp(key, "bLogEveryOpen") == 0)
 			g_settings.logEveryOpen = ParseBool(val, false);
 		else if (_stricmp(key, "bLogStatsOnExit") == 0)
-			g_settings.logStatsOnExit = ParseBool(val, true);
+			g_settings.logStatsOnExit = ParseBool(val, false);
+		else if (_stricmp(key, "bLogStatsAfterWarm") == 0)
+			g_settings.logStatsAfterWarm = ParseBool(val, true);
 	}
 	fclose(f);
 }
@@ -406,7 +449,7 @@ static DWORD PatchFlags(DWORD flags, PathKind kind)
 	}
 
 	if (g_settings.preferRandomAccessOnAssets &&
-		(kind == PathKind::Asset || kind == PathKind::Other)) {
+		kind == PathKind::Asset) {
 		out &= ~FILE_FLAG_SEQUENTIAL_SCAN;
 		out |= FILE_FLAG_RANDOM_ACCESS;
 	}
@@ -875,7 +918,7 @@ static void LogHardwareProfile(const HardwareProfile& hw)
 			Log("GPU: %s - BAR size unavailable", g.name[0] ? g.name : "(display adapter)");
 	}
 	if (hw.rebarState == 1)
-		Log("GPU: Resizable BAR ACTIVE - full-VRAM CPU window; texture uploads take the fast path.");
+		Log("GPU: Resizable BAR appears ACTIVE based on BAR size; diagnostics only for this CPU/file-cache plugin.");
 	else if (hw.rebarState == 0)
 		Log("GPU: BAR looks like the legacy 256 MB window - Resizable BAR appears OFF. "
 			"Enable 'Resizable BAR' / 'Smart Access Memory' (+ Above 4G Decoding) in BIOS if supported.");
@@ -957,6 +1000,96 @@ static void ApplyFastCorePreference(const HardwareProfile& hw)
 			bigL3 ? "V-Cache CCD" : "P-cores");
 	else
 		Log("FastCores: SetProcessDefaultCpuSets failed err=%lu", GetLastError());
+}
+
+
+static void ApplyBackgroundCorePreference(const HardwareProfile& hw)
+{
+    if (!g_settings.placeWarmThreadsOnBackgroundCores ||
+        !g_pGetSystemCpuSetInformation || !g_pSetThreadSelectedCpuSets)
+        return;
+
+    ULONG need = 0;
+    g_pGetSystemCpuSetInformation(nullptr, 0, &need, GetCurrentProcess(), 0);
+    if (!need)
+        return;
+    std::vector<BYTE> buf(need);
+    if (!g_pGetSystemCpuSetInformation(
+            reinterpret_cast<PSYSTEM_CPU_SET_INFORMATION>(buf.data()),
+            need, &need, GetCurrentProcess(), 0))
+        return;
+
+    const HardwareProfile::L3Domain* smallL3 = nullptr;
+    if (hw.dualCcdX3d) {
+        for (const auto& d : hw.l3) {
+            if (!smallL3 || d.bytes < smallL3->bytes)
+                smallL3 = &d;
+        }
+    }
+
+    BYTE minEfficiency = 255;
+    if (hw.hybridCpu) {
+        BYTE* p = buf.data();
+        const BYTE* end = buf.data() + need;
+        while (p < end) {
+            auto* e = reinterpret_cast<PSYSTEM_CPU_SET_INFORMATION>(p);
+            if (!e->Size)
+                break;
+            if (e->Type == CpuSetInformation && !e->CpuSet.Parked)
+                minEfficiency = std::min(minEfficiency, e->CpuSet.EfficiencyClass);
+            p += e->Size;
+        }
+    }
+
+    std::vector<ULONG> ids;
+    BYTE* p = buf.data();
+    const BYTE* end = buf.data() + need;
+    while (p < end) {
+        auto* e = reinterpret_cast<PSYSTEM_CPU_SET_INFORMATION>(p);
+        if (!e->Size)
+            break;
+        if (e->Type == CpuSetInformation && !e->CpuSet.Parked) {
+            bool use = false;
+            if (smallL3) {
+                use = e->CpuSet.Group == smallL3->group &&
+                    ((smallL3->mask >> e->CpuSet.LogicalProcessorIndex) & 1) != 0;
+            } else if (hw.hybridCpu && minEfficiency != 255) {
+                use = e->CpuSet.EfficiencyClass == minEfficiency;
+            }
+            if (use)
+                ids.push_back(e->CpuSet.Id);
+        }
+        p += e->Size;
+    }
+
+    if (!ids.empty() && g_pSetThreadSelectedCpuSets(
+            GetCurrentThread(), ids.data(), static_cast<ULONG>(ids.size()))) {
+        Log("WarmCache: background thread placed on %u %s logical CPUs",
+            static_cast<unsigned>(ids.size()), smallL3 ? "non-V-Cache CCD" : "efficiency-class");
+    }
+}
+
+static uint64_t AutomaticMemoryReserveMB(uint64_t totalMB)
+{
+    if (g_settings.warmCacheReserveMB)
+        return g_settings.warmCacheReserveMB;
+    if (totalMB >= 60ull * 1024) return 8192;
+    if (totalMB >= 30ull * 1024) return 4096;
+    if (totalMB >= 14ull * 1024) return 2048;
+    return 1024;
+}
+
+static bool HasWarmCacheMemoryHeadroom()
+{
+    if (!g_settings.stopWarmCacheOnMemoryPressure)
+        return true;
+    MEMORYSTATUSEX ms{};
+    ms.dwLength = sizeof(ms);
+    if (!GlobalMemoryStatusEx(&ms))
+        return true;
+    const uint64_t totalMB = ms.ullTotalPhys >> 20;
+    const uint64_t availMB = ms.ullAvailPhys >> 20;
+    return availMB > AutomaticMemoryReserveMB(totalMB);
 }
 
 // ---------------------------------------------------------------------------
@@ -1067,31 +1200,60 @@ static std::atomic<uint64_t> g_warmBytes{0};
 static std::atomic<uint32_t> g_warmFilesTouched{0};
 static const WarmPlan* g_warmPlan = nullptr;
 
-static uint64_t WarmMappedPrefetch(HANDLE file, uint64_t bytes)
+static uint64_t WarmMappedPrefetch(HANDLE file, uint64_t fileBytes, uint64_t budgetBytes)
 {
 	HANDLE map = CreateFileMappingW(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
 	if (!map)
 		return 0;
-	uint64_t done = 0;
-	void* view = MapViewOfFile(map, FILE_MAP_READ, 0, 0, (SIZE_T)bytes);
-	if (view) {
-		BYTE* base = (BYTE*)view;
-		const uint64_t chunk = 64ull << 20; // 64 MB per Prefetch call, shutdown-checkable
-		while (done < bytes && !g_shutdown.load(std::memory_order_relaxed)) {
-			const uint64_t n = std::min(chunk, bytes - done);
-			WIN32_MEMORY_RANGE_ENTRY r{ base + done, (SIZE_T)n };
+	void* view = MapViewOfFile(map, FILE_MAP_READ, 0, 0, 0);
+	if (!view) {
+		CloseHandle(map);
+		return 0;
+	}
+
+	BYTE* base = static_cast<BYTE*>(view);
+	const uint64_t chunk = 32ull << 20;
+	const uint64_t stride = std::max<uint64_t>(chunk,
+		static_cast<uint64_t>(std::max(32u, g_settings.warmCacheStrideMB)) << 20);
+	uint64_t requested = 0;
+
+	if (g_settings.warmCacheStridedPrefetch && fileBytes > budgetBytes + stride) {
+		// Touch representative windows across the entire archive instead of only
+		// its header. This better matches open-world traversal through large BSAs.
+		const uint64_t windows = std::max<uint64_t>(1, (budgetBytes + chunk - 1) / chunk);
+		const uint64_t step = std::max<uint64_t>(stride, fileBytes / windows);
+		std::vector<WIN32_MEMORY_RANGE_ENTRY> ranges;
+		for (uint64_t off = 0; off < fileBytes && requested < budgetBytes; off += step) {
+			const uint64_t n = std::min({ chunk, fileBytes - off, budgetBytes - requested });
+			ranges.push_back({ base + off, static_cast<SIZE_T>(n) });
+			requested += n;
+		}
+		if (!ranges.empty() && !g_shutdown.load(std::memory_order_relaxed)) {
+			if (!g_pPrefetchVirtualMemory(GetCurrentProcess(), ranges.size(), ranges.data(), 0))
+				requested = 0;
+		}
+	} else {
+		while (requested < budgetBytes && !g_shutdown.load(std::memory_order_relaxed)) {
+			const uint64_t n = std::min(chunk, budgetBytes - requested);
+			WIN32_MEMORY_RANGE_ENTRY r{ base + requested, static_cast<SIZE_T>(n) };
 			if (!g_pPrefetchVirtualMemory(GetCurrentProcess(), 1, &r, 0))
 				break;
-			done += n;
+			requested += n;
 		}
-		UnmapViewOfFile(view);
 	}
+
+	UnmapViewOfFile(view);
 	CloseHandle(map);
-	return done;
+	return requested;
 }
 
 static uint64_t WarmOneFile(const std::wstring& path, uint64_t maxBytes, bool mapped)
 {
+	if (g_settings.directStorageWarmRead && DirectStorageAvailable()) {
+		return DirectStorageReadDiscard(path.c_str(), maxBytes,
+			g_settings.directStorageTimeoutMs, g_shutdown);
+	}
+
 	HANDLE h = CreateFileW_orig(
 		path.c_str(),
 		GENERIC_READ,
@@ -1111,22 +1273,25 @@ static uint64_t WarmOneFile(const std::wstring& path, uint64_t maxBytes, bool ma
 	}
 
 	LARGE_INTEGER fs{};
-	if (GetFileSizeEx(h, &fs) && (uint64_t)fs.QuadPart < maxBytes)
-		maxBytes = (uint64_t)fs.QuadPart;
+	const bool haveFileSize = GetFileSizeEx(h, &fs) != FALSE;
+	if (haveFileSize && static_cast<uint64_t>(fs.QuadPart) < maxBytes)
+		maxBytes = static_cast<uint64_t>(fs.QuadPart);
 	if (!maxBytes) {
 		CloseHandle(h);
 		return 0;
 	}
 
 	uint64_t total = 0;
-	if (mapped && g_pPrefetchVirtualMemory) {
-		total = WarmMappedPrefetch(h, maxBytes);
+	if (mapped && haveFileSize && g_pPrefetchVirtualMemory) {
+		total = WarmMappedPrefetch(h, static_cast<uint64_t>(fs.QuadPart), maxBytes);
 	}
 	if (!total) {
 		std::vector<char> buf(1 << 20); // 1 MB chunk
 		DWORD rd = 0;
-		while (total < maxBytes &&
-			ReadFile(h, buf.data(), (DWORD)buf.size(), &rd, nullptr) && rd > 0) {
+		while (total < maxBytes) {
+			const DWORD readBytes = static_cast<DWORD>(std::min<uint64_t>(buf.size(), maxBytes - total));
+			if (!ReadFile(h, buf.data(), readBytes, &rd, nullptr) || rd == 0)
+				break;
 			total += rd;
 			if (g_shutdown.load(std::memory_order_relaxed))
 				break;
@@ -1136,9 +1301,22 @@ static uint64_t WarmOneFile(const std::wstring& path, uint64_t maxBytes, bool ma
 	return total;
 }
 
+static uint64_t ReserveWarmBudget(uint64_t wanted)
+{
+	int64_t current = g_warmBudgetLeft.load(std::memory_order_relaxed);
+	while (current > 0) {
+		const uint64_t take = std::min<uint64_t>(wanted, static_cast<uint64_t>(current));
+		if (g_warmBudgetLeft.compare_exchange_weak(current, current - static_cast<int64_t>(take),
+				std::memory_order_relaxed, std::memory_order_relaxed))
+			return take;
+	}
+	return 0;
+}
+
 static void WarmWorker()
 {
 	SetThreadPriority(GetCurrentThread(), (int)g_settings.warmCacheThreadPriority);
+	ApplyBackgroundCorePreference(g_hw);
 	if (g_pSetThreadInformation) {
 		// Warm reads are background work - let EcoQoS/E-cores have this thread.
 		THREAD_POWER_THROTTLING_STATE ts{};
@@ -1154,20 +1332,22 @@ static void WarmWorker()
 	for (;;) {
 		if (g_shutdown.load(std::memory_order_relaxed))
 			return;
+		if (!HasWarmCacheMemoryHeadroom()) {
+			Log("WarmCache: stopped because the RAM safety reserve was reached");
+			return;
+		}
 		const size_t idx = g_warmNext.fetch_add(1, std::memory_order_relaxed);
 		if (idx >= plan->files.size())
 			return;
-		const int64_t left = g_warmBudgetLeft.load(std::memory_order_relaxed);
-		if (left <= 0)
-			return;
 		const auto& entry = plan->files[idx];
 		uint64_t want = std::min(entry.second, plan->perFileBytes);
-		want = std::min(want, (uint64_t)left);
+		want = ReserveWarmBudget(want);
 		if (!want)
-			continue;
+			return;
 		const uint64_t got = WarmOneFile(entry.first, want, plan->mappedPrefetch);
+		if (got < want)
+			g_warmBudgetLeft.fetch_add(static_cast<int64_t>(want - got), std::memory_order_relaxed);
 		if (got) {
-			g_warmBudgetLeft.fetch_sub((int64_t)got, std::memory_order_relaxed);
 			g_warmBytes.fetch_add(got, std::memory_order_relaxed);
 			g_warmFilesTouched.fetch_add(1, std::memory_order_relaxed);
 		}
@@ -1227,15 +1407,22 @@ static void BuildWarmPlan(WarmPlan& plan)
 	if (g_settings.warmCacheBudgetMB) {
 		budgetMB = g_settings.warmCacheBudgetMB;
 	} else if (tune) {
-		// Scale with RAM but never eat more than a quarter of what's free now.
-		// Thresholds carry slack: a "32 GB" kit reports ~31.8 GiB usable.
-		budgetMB = totalMB >= 60 * 1024 ? 8192
-			: totalMB >= 30 * 1024 ? 4096
-			: totalMB >= 14 * 1024 ? 1536
-			: 512;
+		const uint64_t reserveMB = AutomaticMemoryReserveMB(totalMB);
+		if (g_settings.highEndMode) {
+			budgetMB = totalMB >= 60 * 1024 ? 12288
+				: totalMB >= 30 * 1024 ? 6144
+				: totalMB >= 14 * 1024 ? 2048
+				: 768;
+		} else {
+			budgetMB = totalMB >= 60 * 1024 ? 8192
+				: totalMB >= 30 * 1024 ? 4096
+				: totalMB >= 14 * 1024 ? 1536
+				: 512;
+		}
 		if (drive == HardwareProfile::Drive::HDD)
-			budgetMB = std::min<uint64_t>(budgetMB, 256); // don't grind a spinner
-		budgetMB = std::min(budgetMB, availMB / 4);
+			budgetMB = std::min<uint64_t>(budgetMB, 256);
+		const uint64_t usableMB = availMB > reserveMB ? availMB - reserveMB : 0;
+		budgetMB = std::min(budgetMB, usableMB);
 	} else {
 		// Legacy 1.0.x behavior: per-file cap × file count is the only limit.
 		budgetMB = (uint64_t)g_settings.warmCacheBytesPerFileMB * std::max<size_t>(plan.files.size(), 1);
@@ -1243,24 +1430,29 @@ static void BuildWarmPlan(WarmPlan& plan)
 
 	uint64_t perFileMB = g_settings.warmCacheBytesPerFileMB;
 	if (tune) {
-		const uint64_t byDrive = drive == HardwareProfile::Drive::NvmeSsd ? 64
-			: drive == HardwareProfile::Drive::SataSsd ? 32
+		const uint64_t byDrive = drive == HardwareProfile::Drive::NvmeSsd
+			? (g_settings.highEndMode ? 256 : 128)
+			: drive == HardwareProfile::Drive::SataSsd ? 64
 			: drive == HardwareProfile::Drive::HDD ? 8
-			: 16;
+			: 32;
 		perFileMB = std::max(perFileMB, byDrive);
 	}
 
 	unsigned threads = g_settings.warmCacheThreads;
 	if (!threads) {
 		if (tune) {
-			// NVMe loves queue depth; HDD hates concurrent readers.
-			threads = drive == HardwareProfile::Drive::NvmeSsd ? 4
-				: drive == HardwareProfile::Drive::SataSsd ? 2
-				: 1;
+			if (drive == HardwareProfile::Drive::NvmeSsd) {
+				const unsigned cpuScale = std::max(4u, std::min(8u, g_hw.logicalCores / 4));
+				threads = g_settings.highEndMode ? cpuScale : std::min(4u, cpuScale);
+			} else {
+				threads = drive == HardwareProfile::Drive::SataSsd ? 2 : 1;
+			}
 		} else {
 			threads = 1;
 		}
 	}
+	if (g_settings.directStorageWarmRead && DirectStorageAvailable())
+		threads = 1; // DirectStorage batches internally through one queue.
 	threads = std::max(1u, std::min({ threads, 8u, (unsigned)std::max<size_t>(plan.files.size(), 1) }));
 
 	plan.budgetBytes = budgetMB << 20;
@@ -1312,6 +1504,13 @@ static void WarmCacheCoordinator()
 		g_warmFilesTouched.load(),
 		(unsigned long long)elapsed,
 		plan.threads, plan.threads == 1 ? "" : "s");
+	if (g_settings.logStatsAfterWarm) {
+		Log("Stats snapshot: opens=%llu patched=%llu no_buffering_stripped=%llu warm_read=%llu MB",
+			(unsigned long long)g_opensTotal.load(),
+			(unsigned long long)g_opensPatched.load(),
+			(unsigned long long)g_noBufferingStripped.load(),
+			(unsigned long long)(g_warmBytes.load() >> 20));
+	}
 }
 
 static void DetectSiblingPlugins()
@@ -1394,7 +1593,10 @@ static bool AttachHooks()
 	return true;
 }
 
-static void DetachHooks()
+// Retained for completeness. SKSE never hot-unloads plugins and DllMain's
+// DLL_PROCESS_DETACH no longer detaches (Windows reclaims the trampoline at
+// process exit), so this is intentionally uncalled.
+[[maybe_unused]] static void DetachHooks()
 {
 	if (!g_hooksAttached)
 		return;
@@ -1437,10 +1639,14 @@ SKSEAPI bool SKSEPlugin_Query(const SKSEInterface* skse, PluginInfo* info)
 
 SKSEAPI bool SKSEPlugin_Load(const SKSEInterface* skse)
 {
-	(void)skse;
-	// Hooks already attached from DllMain (before most file I/O).
-	if (g_hookAttachFailed)
+	LoadSettings();
+	OpenLog();
+	ResolveDynamicApis();
+	Log("NextGen Disk Cache " PLUGIN_VERSION_STRING " - safe SKSE load path");
+	if (!AttachHooks()) {
+		g_hookAttachFailed = true;
 		Log("WARNING: CreateFile hooks did not attach - running detection/hints only");
+	}
 
 	DetectSiblingPlugins();
 
@@ -1458,8 +1664,24 @@ SKSEAPI bool SKSEPlugin_Load(const SKSEInterface* skse)
 
 	ApplyProcessHints();
 
-	if (g_settings.enableWarmCache && !g_warmThread.joinable()) {
-		g_warmThread = std::thread(WarmCacheCoordinator);
+	if (g_settings.directStorageProbe) {
+		const auto ds = DirectStorageInitialize(
+			g_settings.directStorageQueueCapacity, g_settings.directStorageBatchMB,
+			g_settings.directStorageWarmRead);
+		if (ds.memoryQueueCreated)
+			Log("DirectStorage: runtime ready at %ls; low-priority system-memory queue created [EXPERIMENTAL RAW READ ENABLED]", ds.runtimePath);
+		else if (ds.factoryCreated && !g_settings.directStorageWarmRead)
+			Log("DirectStorage: runtime validated at %ls; queue not created because raw reads are disabled", ds.runtimePath);
+		else if (ds.runtimeDllPresent)
+			Log("DirectStorage: runtime found at %ls but requested initialization failed hr=0x%08X", ds.runtimePath, (unsigned)ds.result);
+		else
+			Log("DirectStorage: runtime not found; PrefetchVirtualMemory remains active");
+	}
+
+	bool expectedWarm = false;
+	if (g_settings.enableWarmCache &&
+		g_warmStarted.compare_exchange_strong(expectedWarm, true)) {
+		std::thread(WarmCacheCoordinator).detach();
 		Log("WarmCache thread started (delay %u s)", g_settings.warmCacheDelaySecs);
 	}
 
@@ -1470,50 +1692,20 @@ SKSEAPI bool SKSEPlugin_Load(const SKSEInterface* skse)
 }
 
 // ---------------------------------------------------------------------------
-// DllMain - attach CreateFile hooks as early as possible
+// DllMain
 // ---------------------------------------------------------------------------
 BOOL WINAPI DllMain(HINSTANCE hInstance, DWORD dwReason, LPVOID)
 {
 	if (DetourIsHelperProcess())
 		return TRUE;
-
-	switch (dwReason) {
-	case DLL_PROCESS_ATTACH:
+	if (dwReason == DLL_PROCESS_ATTACH) {
 		g_selfModule = hInstance;
 		DisableThreadLibraryCalls(hInstance);
-		LoadSettings();
-		OpenLog();
-		ResolveDynamicApis();
-		Log("NextGen Disk Cache " PLUGIN_VERSION_STRING
-			" - DllMain attach (based on Archost Disk Cache Enabler; uploaded by enpinion)");
-		// No MessageBox here: UI calls under loader lock can deadlock.
-		// Failure is logged now and again in SKSEPlugin_Load.
-		if (!AttachHooks()) {
-			g_hookAttachFailed = true;
-			Log("ERROR: failed to attach CreateFile hooks - game runs without flag patching");
-		}
-		break;
-
-	case DLL_PROCESS_DETACH:
-		g_shutdown.store(true);
-		if (g_warmThread.joinable()) {
-			// Don't block unload forever
-			g_warmThread.detach();
-		}
-		if (g_settings.logStatsOnExit) {
-			Log("Stats: opens=%llu patched=%llu no_buffering_stripped=%llu warm_read=%llu MB",
-				(unsigned long long)g_opensTotal.load(),
-				(unsigned long long)g_opensPatched.load(),
-				(unsigned long long)g_noBufferingStripped.load(),
-				(unsigned long long)(g_warmBytes.load() >> 20));
-		}
-		DetachHooks();
-		{
-			std::lock_guard<std::mutex> lock(g_logMutex);
-			if (g_log.is_open())
-				g_log.close();
-		}
-		break;
+		// No file I/O, Detours transactions, COM, threads, or logging under loader lock.
+	} else if (dwReason == DLL_PROCESS_DETACH) {
+		// SKSE does not hot-unload plugins. At process exit Windows reclaims handles,
+		// mappings, COM objects, and detached workers without blocking loader lock.
+		g_shutdown.store(true, std::memory_order_relaxed);
 	}
 	return TRUE;
 }

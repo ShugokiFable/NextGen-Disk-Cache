@@ -1,3 +1,34 @@
+================================================================================
+## [1.2.0] - 2026-07-18
+Intent: High-end-first storage/scheduler update with truthful DirectStorage 1.3 support.
+Changes:
+  - Added optional dynamically loaded DirectStorage 1.3 file-to-memory backend; probe-only mode creates no idle queue.
+  - Kept PrefetchVirtualMemory as the default OS-page-cache warming path.
+  - Added strided archive prefetch for large BSA/BA2 files.
+  - Added dynamic free-RAM reserve and memory-pressure cancellation.
+  - Increased auto-tune ceilings for 32-64+ GB RAM and NVMe systems.
+  - Added per-thread CPU-set placement for background warm workers.
+  - Kept whole-process X3D/P-core preference opt-in instead of forcing affinity.
+  - Disabled working-set expansion in shipped profiles.
+  - Moved heavy initialization and Detours work out of DllMain.
+  - Fixed concurrent warm-budget overshoot and capped fallback ReadFile requests.
+  - Restricted forced RANDOM_ACCESS to known game-asset extensions.
+  - Replaced unsafe exit-time logging with a post-warm statistics snapshot.
+  - Added VS2022 GitHub Actions build, separate symbols, SHA-256, and FOMOD staging.
+Agent: GPT (source overlay) / Claude + Kimi (build, fixes, validation, release)
+Validation (2026-07-18, target rig: 9800X3D / 32 GB DDR5-6000 / RTX 4080 SUPER):
+  - tools/validate_rc.py PASS, idempotent; full --repo dry-run from the 1.1.0
+    base commit PASS (apply overlay -> validate transformed checkout).
+  - Windows compile green: VS 18 2026 generator via build.ps1, Release x64,
+    NextGenDiskCache.dll 356352 bytes, no new warnings.
+  - Runtime harness (SKSEPlugin_Load path) green in all DirectStorage modes:
+    runtime absent (PrefetchVirtualMemory fallback), probe-only (factory
+    validated, no idle queue), raw-read enabled (queue, reads, cancellation
+    guard). Ship-default modes re-verified on the final binary.
+  - package-release.ps1 gates PASS: FOMOD zip + SHA-256 sidecar; no
+    PDB/LIB/OBJ/EXP in the public payload; symbols stage to build/symbols.
+================================================================================
+
 # CHANGELOG — NextGen Disk Cache
 # One living file. Do not delete old entries.
 

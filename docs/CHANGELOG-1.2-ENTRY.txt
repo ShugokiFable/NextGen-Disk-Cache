@@ -1,0 +1,21 @@
+================================================================================
+## [1.2.0] - 2026-07-18
+Intent: High-end-first storage/scheduler update with truthful DirectStorage 1.3 support.
+Changes:
+  - Added optional dynamically loaded DirectStorage 1.3 file-to-memory backend; probe-only mode creates no idle queue.
+  - Kept PrefetchVirtualMemory as the default OS-page-cache warming path.
+  - Added strided archive prefetch for large BSA/BA2 files.
+  - Added dynamic free-RAM reserve and memory-pressure cancellation.
+  - Increased auto-tune ceilings for 32-64+ GB RAM and NVMe systems.
+  - Added per-thread CPU-set placement for background warm workers.
+  - Kept whole-process X3D/P-core preference opt-in instead of forcing affinity.
+  - Disabled working-set expansion in shipped profiles.
+  - Moved heavy initialization and Detours work out of DllMain.
+  - Fixed concurrent warm-budget overshoot and capped fallback ReadFile requests.
+  - Restricted forced RANDOM_ACCESS to known game-asset extensions.
+  - Replaced unsafe exit-time logging with a post-warm statistics snapshot.
+  - Added VS2022 GitHub Actions build, separate symbols, SHA-256, and FOMOD staging.
+Validation:
+  - Source transformation anchors and generated XML validated by tools/validate_rc.py.
+  - Windows compilation and in-game SKSE runtime test still required before Nexus release.
+================================================================================

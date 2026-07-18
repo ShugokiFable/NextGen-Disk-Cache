@@ -1,4 +1,4 @@
-﻿build/
+build/
 .vs/
 out/
 CMakeUserPresets.json
@@ -15,3 +15,9 @@ package/SKSE/Plugins/*.dll
 package/SKSE/Plugins/*.pdb
 package/SKSE/Plugins/*.lib
 package/SKSE/Plugins/*.exp
+deps/directstorage/
+deps/_nuget/
+dist/
+__pycache__/
+*.pyc
+*.pyo

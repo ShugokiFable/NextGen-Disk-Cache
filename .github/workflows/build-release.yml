@@ -1,0 +1,52 @@
+name: Build NextGen Disk Cache
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, "release/**", "agent/**" ]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: NuGet/setup-nuget@v2
+
+      - name: Validate source bundle
+        run: python tools/validate_rc.py
+
+      - name: Install DirectStorage 1.3 SDK
+        shell: pwsh
+        run: |
+          nuget install Microsoft.Direct3D.DirectStorage -Version 1.3.0 -OutputDirectory deps/_nuget -NonInteractive
+          Copy-Item deps/_nuget/Microsoft.Direct3D.DirectStorage.1.3.0 deps/directstorage -Recurse
+
+      - name: Configure
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build release
+        run: cmake --build build --config Release --parallel
+
+      - name: Package FOMOD
+        shell: pwsh
+        run: .\package-release.ps1 -SkipBuild
+
+      - name: Upload Nexus-ready artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NextGenDiskCache-1.2.0-FOMOD
+          path: |
+            dist/NextGenDiskCache-1.2.0-FOMOD.zip
+            dist/NextGenDiskCache-1.2.0-SHA256.txt
+
+      - name: Upload symbols separately
+        uses: actions/upload-artifact@v4
+        with:
+          name: NextGenDiskCache-1.2.0-symbols
+          path: build/symbols/NextGenDiskCache.pdb
+          if-no-files-found: warn

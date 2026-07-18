@@ -24,6 +24,21 @@ This project keeps that idea and adds:
 
 **Remove** the old `diskCacheEnabler.dll` if you install this — don’t run both.
 
+## 1.2.0 - high-end scheduler and storage path
+
+Version 1.2 keeps the mod's high-end-PC focus while removing placebo behavior:
+
+- High-end auto-tune is the default profile. NVMe systems can use up to eight low-priority workers and larger adaptive archive windows, with a hard free-RAM reserve.
+- Large archives use strided `PrefetchVirtualMemory` windows across the file rather than warming only the first block.
+- Warm workers can be placed on the non-V-Cache CCD of a dual-CCD X3D processor, or on efficiency-class cores of a hybrid CPU. The Skyrim process itself is not pinned by default.
+- Working-set expansion is disabled by default. Skyrim's process working set is not the Windows system file cache.
+- DirectStorage 1.3 is dynamically detected. An actual file-to-memory backend exists, but remains experimental and off by default because raw DirectStorage reads are not equivalent to populating the normal Windows page cache.
+- Initialization, Detours attachment, logging, and thread creation are moved out of `DllMain` to avoid doing complex work under the Windows loader lock.
+- Release builds no longer put PDBs in the public mod directory. CI stores symbols as a separate artifact and creates the FOMOD ZIP.
+
+X3D cache, ReBAR/SAM, XMP/EXPO, DDR5 timings, and an SSD's onboard DRAM are hardware or firmware features. The plugin can detect relevant topology and choose better software behavior, but it cannot switch those features on or manufacture a benefit where the Windows/Skyrim I/O path does not use them.
+
+
 ## 1.1.0 — modern hardware support
 
 The plugin now builds a **hardware profile** at startup and adapts to it:
@@ -35,7 +50,7 @@ The plugin now builds a **hardware profile** at startup and adapts to it:
 | **Resizable BAR** | Probes the GPU's largest PCI BAR (SetupAPI/cfgmgr32). ≥1 GB ⇒ **ACTIVE**, 256 MB window ⇒ tells you to enable ReBAR / Smart Access Memory in BIOS. Detection only — ReBAR itself is BIOS-level. |
 | **DDR5 / DDR4 speed** | Reads SMBIOS (Type 17): DDR generation + running MT/s. Warns if DDR5 runs at JEDEC 4800 when XMP/EXPO is likely off. CAS (CL30) lives in SPD and is not readable from user mode — no fake numbers. |
 | **NVMe / SATA SSD / HDD** | Seek-penalty + bus-type probe on the game drive. Warm cache auto-scales: NVMe gets 4 parallel readers + 64 MB/file, SATA 2 + 32 MB, HDD stays single-threaded sequential and capped at 256 MB total. |
-| **SSD DRAM cache** | Warm reads prime the OS page cache *and* the drive's own DRAM/SLC layer. Reads are tagged **IoPriorityHintLow** so the game always outranks them. |
+| **SSD DRAM cache** | Warm reads prime the Windows file cache. They may also interact with an SSD's firmware-managed DRAM/SLC cache, but that cache is not directly controllable or generically detectable from this plugin. |
 | **32–64 GB RAM builds** | Auto warm budget: 8 GB (64 GB+ RAM), 4 GB (32 GB), 1.5 GB (16 GB) — always capped at ¼ of *free* RAM at warm time. |
 | **Win8+ prefetch** | Warm cache uses `MapViewOfFile` + `PrefetchVirtualMemory` (kernel-optimal I/O sizes) instead of a ReadFile loop, with automatic fallback. |
 
@@ -49,7 +64,7 @@ in the log when a BIOS switch looks like it's still off.
 ## Requirements
 
 - [SKSE64](https://skse.silverlock.org/) matching your game version
-- Visual Studio 2022/2026 + CMake (to build from source)
+- Visual Studio 2022 + CMake + NuGet (to build from source)
 
 No Address Library required (signature / no-struct plugin).
 
