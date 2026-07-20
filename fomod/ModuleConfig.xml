@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
-  <moduleName>NextGen Disk Cache 1.3.0</moduleName>
+  <moduleName>NextGen Disk Cache 1.3.1</moduleName>
   <requiredInstallFiles>
     <folder source="Core" destination="" priority="0" />
   </requiredInstallFiles>

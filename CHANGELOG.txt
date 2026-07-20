@@ -1,4 +1,50 @@
 ================================================================================
+## [1.3.1] - 2026-07-20
+Agent: Claude
+Intent: Fix DirectStorage runtime detection in the real game layout; restrict
+        the CreateFile cache policy to buffered read handles.
+Root cause (DirectStorage):
+  - dstorage.dll carries no import entry for dstoragecore.dll; it loads it by
+    bare name at first use. That lookup searches the application directory
+    (the game root), System32, and PATH - never Data\SKSE\Plugins - so
+    initialization failed hr=0x80004001 whenever the FOMOD-installed runtime
+    sat beside the plugin. LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR cannot influence
+    that dynamic load; it only scopes static import resolution.
+Root cause (cache policy):
+  - PatchFlags ignored dwDesiredAccess and completion/durability flags: write
+    handles and OVERLAPPED / WRITE_THROUGH opens of asset-classed or unknown
+    files were still patched. Same failure family as the 1.2.1 S.L.A.C.K.
+    incident, but extension lists cannot anticipate every state file other
+    software writes. Stripping NO_BUFFERING from an OVERLAPPED handle can also
+    turn expected-async completions synchronous (latent use-after-free in
+    fragile callers) - a plausible, unconfirmed vector for the reported
+    end-of-dialogue crash. It also sabotaged DirectStorage's own unbuffered
+    archive opens whenever raw reads were enabled.
+Changes:
+  - DirectStorageBackend: pre-load dstoragecore.dll by absolute path from the
+    plugin directory before loading dstorage.dll; release it on shutdown;
+    record core presence before factory creation; the failure log now names
+    the missing core DLL explicitly.
+  - PatchFlags receives dwDesiredAccess: any write/delete intent,
+    FILE_FLAG_OVERLAPPED, or FILE_FLAG_WRITE_THROUGH leaves caller flags
+    untouched regardless of extension. Read-side cache policy is unchanged.
+  - New stats field write_or_async_left_untouched; README 1.3.1 section;
+    version strings bumped across build/packaging/validator files.
+Validation (2026-07-20, target rig; split-layout harness: exe in game root,
+plugin + runtime in Data\SKSE\Plugins - the layout SKSE actually produces):
+  - 1.3.0 repro first: "runtime found ... initialization failed hr=0x80004001".
+  - 1.3.1 raw-read ON: "runtime ready ... queue created", 32 MB read via
+    DirectStorage. Probe-only: "runtime validated ... queue not created".
+    Runtime absent: PrefetchVirtualMemory fallback. All PASS.
+  - Flag-gate self-test via bLogEveryOpen: write+WRITE_THROUGH+NO_BUFFERING
+    .json A0000080->A0000080 (untouched); read-only .json 20000080->10000080
+    (NO_BUFFERING stripped, RANDOM_ACCESS added); OVERLAPPED read
+    60000080->60000080 (untouched).
+  - build.ps1 VS18 Release green (only pre-existing vendored warnings);
+    validate_rc.py PASS; package-release.ps1 gates PASS.
+  - UNPROVEN: in-game SKSE runtime test. The crash report fix is a plausible
+    vector removal, not a confirmed reproduction - crash log requested.
+================================================================================
 ## [1.3.0] - 2026-07-18
 Agent: Kimi
 Intent: Manual game-drive class override for RAID / Storage Spaces / USB setups.

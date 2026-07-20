@@ -24,6 +24,12 @@ This project keeps that idea and adds:
 
 **Remove** the old `diskCacheEnabler.dll` if you install this — don’t run both.
 
+## 1.3.1 - DirectStorage detection fix + read-only cache policy
+
+**DirectStorage runtime detection now works in the real game layout.** `dstorage.dll` has no import entry for `dstoragecore.dll` — it loads it by bare name at runtime, which searches the *game* directory, not `Data\SKSE\Plugins`. Result: the runtime was found but initialization failed with `hr=0x80004001` for everyone who installed the FOMOD's DirectStorage option. The plugin now pre-loads `dstoragecore.dll` from its own directory by absolute path, and the log states explicitly when the core DLL is the missing piece.
+
+**The cache policy now touches only buffered read handles.** Handles opened with any write/delete intent, `FILE_FLAG_OVERLAPPED`, or `FILE_FLAG_WRITE_THROUGH` keep the caller's flags exactly, regardless of file extension. Rationale: a disk-cache mod optimizes read caching — it has no business altering write durability or async-completion semantics of other software in the process. This is the extension-independent generalization of 1.2.1's save/cosave carve-out: it protects state files this mod has never heard of, not just the ones on a list. The log's stats snapshot reports how many opens the gate left untouched (`write_or_async_left_untouched`).
+
 ## 1.3.0 - manual game-drive override
 
 RAID arrays, Storage Spaces, and some USB enclosures report a generic bus type, so the game drive can be misclassified — a striped NVMe RAID0, for example, looks like a SATA SSD (or even an HDD if the controller reports a seek penalty). New optional INI setting `iGameDriveClass` under `[Hardware]`: `0` auto-detect (default), `1` HDD, `2` SATA SSD, `3` NVMe SSD. It steers only the warm-cache auto-tune (budget cap, per-file MB, reader threads); the CreateFile cache policy is identical for every drive class. Check the log's `Game drive:` line first — most users should leave this at 0.

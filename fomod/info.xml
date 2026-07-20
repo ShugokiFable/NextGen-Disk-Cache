@@ -2,7 +2,7 @@
 <fomod>
   <Name>NextGen Disk Cache</Name>
   <Author>Archost; derivative maintained by ShugokiFable</Author>
-  <Version>1.3.0</Version>
+  <Version>1.3.1</Version>
   <Website>https://github.com/ShugokiFable/NextGen-Disk-Cache</Website>
   <Description>Hardware-aware Windows file-cache tuning for Skyrim SE/AE, with optional DirectStorage 1.3 runtime support.</Description>
 </fomod>

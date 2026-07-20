@@ -76,8 +76,8 @@
 #define PLUGIN_NAME    "NextGen Disk Cache"
 // Original author first (Archost). Uploader on Nexus: enpinion.
 #define PLUGIN_AUTHOR  "Archost (mod: enpinion upload; derivative)"
-#define PLUGIN_VERSION ((1u << 16) | (3u << 8) | 0u) // 1.3.0
-#define PLUGIN_VERSION_STRING "1.3.0"
+#define PLUGIN_VERSION ((1u << 16) | (3u << 8) | 1u) // 1.3.1
+#define PLUGIN_VERSION_STRING "1.3.1"
 
 // ---------------------------------------------------------------------------
 // Settings (INI)
@@ -138,6 +138,7 @@ static std::atomic<bool> g_shutdown{false};
 static std::atomic<uint64_t> g_opensTotal{0};
 static std::atomic<uint64_t> g_opensPatched{0};
 static std::atomic<uint64_t> g_noBufferingStripped{0};
+static std::atomic<uint64_t> g_opensLeftUntouched{0}; // write/OVERLAPPED/WRITE_THROUGH gate
 static std::atomic<bool> g_warmStarted{false};
 static HMODULE g_selfModule = nullptr;
 static bool g_hookAttachFailed = false;
@@ -444,13 +445,29 @@ static PathKind ClassifyPathW(const wchar_t* path)
 	return ClassifyExt(e);
 }
 
-static DWORD PatchFlags(DWORD flags, PathKind kind)
+static DWORD PatchFlags(DWORD flags, DWORD desiredAccess, PathKind kind)
 {
 	// Save games / cosaves and log/temp files: honor the caller's flags exactly.
 	// Stripping NO_BUFFERING or forcing RANDOM_ACCESS here defeats deliberate
 	// durability designs (S.L.A.C.K. cosaves) and sequential dump/log writers.
 	if (kind == PathKind::Save || kind == PathKind::LogOrTemp)
 		return flags;
+
+	// A disk-cache mod optimizes buffered READ paths - nothing else. Handles
+	// opened with any write/delete intent, OVERLAPPED, or WRITE_THROUGH keep
+	// the caller's flags regardless of extension: stripping NO_BUFFERING from
+	// an OVERLAPPED handle can turn an expected-async completion synchronous
+	// (latent use-after-free in fragile callers), and write-through writers
+	// (crash-safe cosaves, journals, mod state files) chose their flags for
+	// durability, not throughput. This is extension-independent on purpose -
+	// 1.2.1's save-extension carve-out could not cover files it never heard of.
+	const DWORD kWriteIntent = GENERIC_WRITE | GENERIC_ALL | MAXIMUM_ALLOWED |
+		FILE_WRITE_DATA | FILE_APPEND_DATA | DELETE;
+	if ((desiredAccess & kWriteIntent) != 0 ||
+		(flags & (FILE_FLAG_OVERLAPPED | FILE_FLAG_WRITE_THROUGH)) != 0) {
+		g_opensLeftUntouched.fetch_add(1, std::memory_order_relaxed);
+		return flags;
+	}
 
 	DWORD out = flags;
 	if (g_settings.stripNoBuffering && (out & FILE_FLAG_NO_BUFFERING)) {
@@ -488,7 +505,7 @@ static HANDLE WINAPI CreateFileA_hook(
 	DWORD flags = dwFlagsAndAttributes;
 	if (g_settings.enableFileCacheHooks && g_settings.enableCreateFileA) {
 		const PathKind kind = ClassifyPathA(lpFilename);
-		const DWORD patched = PatchFlags(flags, kind);
+		const DWORD patched = PatchFlags(flags, dwDesiredAccess, kind);
 		if (patched != flags)
 			g_opensPatched.fetch_add(1, std::memory_order_relaxed);
 		flags = patched;
@@ -513,7 +530,7 @@ static HANDLE WINAPI CreateFileW_hook(
 	DWORD flags = dwFlagsAndAttributes;
 	if (g_settings.enableFileCacheHooks && g_settings.enableCreateFileW) {
 		const PathKind kind = ClassifyPathW(lpFilename);
-		const DWORD patched = PatchFlags(flags, kind);
+		const DWORD patched = PatchFlags(flags, dwDesiredAccess, kind);
 		if (patched != flags)
 			g_opensPatched.fetch_add(1, std::memory_order_relaxed);
 		flags = patched;
@@ -1515,10 +1532,12 @@ static void WarmCacheCoordinator()
 		(unsigned long long)elapsed,
 		plan.threads, plan.threads == 1 ? "" : "s");
 	if (g_settings.logStatsAfterWarm) {
-		Log("Stats snapshot: opens=%llu patched=%llu no_buffering_stripped=%llu warm_read=%llu MB",
+		Log("Stats snapshot: opens=%llu patched=%llu no_buffering_stripped=%llu "
+			"write_or_async_left_untouched=%llu warm_read=%llu MB",
 			(unsigned long long)g_opensTotal.load(),
 			(unsigned long long)g_opensPatched.load(),
 			(unsigned long long)g_noBufferingStripped.load(),
+			(unsigned long long)g_opensLeftUntouched.load(),
 			(unsigned long long)(g_warmBytes.load() >> 20));
 	}
 }
@@ -1694,7 +1713,9 @@ SKSEAPI bool SKSEPlugin_Load(const SKSEInterface* skse)
 		else if (ds.factoryCreated && !g_settings.directStorageWarmRead)
 			Log("DirectStorage: runtime validated at %ls; queue not created because raw reads are disabled", ds.runtimePath);
 		else if (ds.runtimeDllPresent)
-			Log("DirectStorage: runtime found at %ls but requested initialization failed hr=0x%08X", ds.runtimePath, (unsigned)ds.result);
+			Log("DirectStorage: runtime found at %ls but requested initialization failed hr=0x%08X%s",
+				ds.runtimePath, (unsigned)ds.result,
+				ds.coreDllPresent ? "" : " (dstoragecore.dll is not loaded - it must sit beside dstorage.dll)");
 		else
 			Log("DirectStorage: runtime not found; PrefetchVirtualMemory remains active");
 	}

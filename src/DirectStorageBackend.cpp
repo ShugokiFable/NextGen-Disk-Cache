@@ -11,6 +11,7 @@ using DStorageGetFactoryFn = HRESULT(WINAPI*)(REFIID, void**);
 
 std::mutex g_mutex;
 HMODULE g_runtime = nullptr;
+HMODULE g_core = nullptr;
 IDStorageFactory* g_factory = nullptr;
 IDStorageQueue* g_queue = nullptr;
 IDStorageStatusArray* g_status = nullptr;
@@ -37,6 +38,10 @@ void ReleaseRuntimeUnlocked()
         FreeLibrary(g_runtime);
         g_runtime = nullptr;
     }
+    if (g_core) {
+        FreeLibrary(g_core);
+        g_core = nullptr;
+    }
 }
 
 void ResetUnlocked()
@@ -54,10 +59,14 @@ DirectStorageInfo DirectStorageInitialize(
     std::lock_guard<std::mutex> lock(g_mutex);
     ResetUnlocked();
 
-    // Prefer a redistributable installed beside this SKSE plugin. Explicitly
-    // using the plugin directory also lets dstorage.dll find dstoragecore.dll
-    // through LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR. Fall back to registered/default
-    // loader locations when another component already provides the runtime.
+    // Prefer a redistributable installed beside this SKSE plugin. dstorage.dll
+    // has NO import entry for dstoragecore.dll - it LoadLibrary()s it by bare
+    // name at first use, which resolves against the APPLICATION directory
+    // (the game root), not the plugin directory. LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
+    // cannot help with that dynamic load, so dstoragecore.dll is pre-loaded here
+    // by absolute path; the loader then binds the bare-name lookup to the module
+    // already in the process. Without this, initialization fails hr=0x80004001
+    // whenever the runtime sits in Data\SKSE\Plugins (the shipped FOMOD layout).
     wchar_t localRuntime[MAX_PATH] = {};
     HMODULE self = nullptr;
     if (GetModuleHandleExW(
@@ -67,7 +76,12 @@ DirectStorageInfo DirectStorageInitialize(
         wchar_t* slash = wcsrchr(localRuntime, L'\\');
         if (slash) {
             slash[1] = 0;
+            wchar_t localCore[MAX_PATH] = {};
+            wcscpy_s(localCore, MAX_PATH, localRuntime);
+            wcscat_s(localCore, MAX_PATH, L"dstoragecore.dll");
             wcscat_s(localRuntime, MAX_PATH, L"dstorage.dll");
+            g_core = LoadLibraryExW(localCore, nullptr,
+                LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
             g_runtime = LoadLibraryExW(localRuntime, nullptr,
                 LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
         }
@@ -80,6 +94,9 @@ DirectStorageInfo DirectStorageInitialize(
     }
     g_info.runtimeDllPresent = true;
     GetModuleFileNameW(g_runtime, g_info.runtimePath, MAX_PATH);
+    // Recorded before factory creation so a failure log can say whether the
+    // core module was ever loadable.
+    g_info.coreDllPresent = GetModuleHandleW(L"dstoragecore.dll") != nullptr;
 
     auto getFactory = reinterpret_cast<DStorageGetFactoryFn>(
         GetProcAddress(g_runtime, "DStorageGetFactory"));
