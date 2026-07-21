@@ -1,3 +1,16 @@
+NextGen Disk Cache 1.4.0 - Safety Rework
+============================================
+- Default hook scope is now BSA/BA2 archives only.
+- Unknown extensions are never modified.
+- Write-capable, create/truncate, overlapped, write-through, and delete-on-close opens are untouched.
+- RANDOM_ACCESS is archive-only; loose assets, audio, plugins, INI/JSON, and databases retain caller hints.
+- Added an internal policy self-test that disables hooks on failure.
+- Warm cache and DirectStorage probing now ship disabled.
+- Added a bounded experimental warmer: 512 MB, 8 MB/archive, one thread, 60-second delay.
+- Warm cache scans only BSA/BA2, uses stable alphabetical coverage, and auto-tune cannot inflate configured limits.
+- Numeric INI values are clamped to prevent unsigned wrap and unbounded work.
+- Added Safe Default, Minimal Compatibility, and Experimental Bounded Warm Cache profiles.
+
 ================================================================================
 ## [1.3.1] - 2026-07-20
 Agent: Claude

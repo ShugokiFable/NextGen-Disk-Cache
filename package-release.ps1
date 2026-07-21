@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "1.3.1",
+    [string]$Version = "1.4.0",
     [switch]$SkipBuild
 )
 
@@ -23,13 +23,15 @@ $shaFile = Join-Path $distRoot "NextGenDiskCache-$Version-SHA256.txt"
 Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item $zip -Force -ErrorAction SilentlyContinue
 New-Item (Join-Path $stage "Core\SKSE\Plugins") -ItemType Directory -Force | Out-Null
-New-Item (Join-Path $stage "Profiles\HighEnd") -ItemType Directory -Force | Out-Null
-New-Item (Join-Path $stage "Profiles\Balanced") -ItemType Directory -Force | Out-Null
+New-Item (Join-Path $stage "Profiles\SafeDefault") -ItemType Directory -Force | Out-Null
+New-Item (Join-Path $stage "Profiles\Minimal") -ItemType Directory -Force | Out-Null
+New-Item (Join-Path $stage "Profiles\ExperimentalWarmCache") -ItemType Directory -Force | Out-Null
 New-Item (Join-Path $stage "Optional\DirectStorage") -ItemType Directory -Force | Out-Null
 
 Copy-Item $dll (Join-Path $stage "Core\SKSE\Plugins\")
-Copy-Item "profiles\HighEnd\NextGenDiskCache.ini" (Join-Path $stage "Profiles\HighEnd\")
-Copy-Item "profiles\Balanced\NextGenDiskCache.ini" (Join-Path $stage "Profiles\Balanced\")
+Copy-Item "profiles\SafeDefault\NextGenDiskCache.ini" (Join-Path $stage "Profiles\SafeDefault\")
+Copy-Item "profiles\Minimal\NextGenDiskCache.ini" (Join-Path $stage "Profiles\Minimal\")
+Copy-Item "profiles\ExperimentalWarmCache\NextGenDiskCache.ini" (Join-Path $stage "Profiles\ExperimentalWarmCache\")
 Copy-Item "fomod" (Join-Path $stage "fomod") -Recurse
 
 $rootDocs = @(

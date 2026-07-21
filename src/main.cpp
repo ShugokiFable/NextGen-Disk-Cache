@@ -28,7 +28,7 @@
 //
 // 1.1.0: hardware profiler (X3D / L3 topology, DDR generation + speed via
 // SMBIOS, NVMe/SATA/HDD game drive, GPU BAR size -> Resizable BAR state),
-// auto-tuned multi-threaded warm cache with PrefetchVirtualMemory, low I/O
+// bounded optional warm cache with PrefetchVirtualMemory, low I/O
 // priority warm reads, opt-in fast-core (V-Cache CCD / P-core) preference.
 //
 // ReBAR / XMP-EXPO / x3D themselves are BIOS / silicon - this plugin DETECTS
@@ -40,6 +40,8 @@
 #include <cctype>
 #include <cstdarg>
 #include <cstdint>
+#include <cerrno>
+#include <climits>
 #include <string>
 #include <vector>
 #include <atomic>
@@ -49,6 +51,7 @@
 #include <fstream>
 #include <algorithm>
 #include <memory>
+#include <cmath>
 
 #include <Windows.h>
 #include <ShlObj.h>
@@ -76,8 +79,8 @@
 #define PLUGIN_NAME    "NextGen Disk Cache"
 // Original author first (Archost). Uploader on Nexus: enpinion.
 #define PLUGIN_AUTHOR  "Archost (mod: enpinion upload; derivative)"
-#define PLUGIN_VERSION ((1u << 16) | (3u << 8) | 1u) // 1.3.1
-#define PLUGIN_VERSION_STRING "1.3.1"
+#define PLUGIN_VERSION ((1u << 16) | (4u << 8) | 0u) // 1.4.0
+#define PLUGIN_VERSION_STRING "1.4.0"
 
 // ---------------------------------------------------------------------------
 // Settings (INI)
@@ -87,30 +90,34 @@ struct Settings {
 	bool enableCreateFileW = true;
 	bool enableCreateFileA = true;
 	bool stripNoBuffering = true;
-	bool preferRandomAccessOnAssets = true;
+	// Default-safe scope: only known Bethesda archive reads are rewritten.
+	// Broad mode may include known loose assets, but unknown extensions are
+	// never modified.
+	bool conservativeHookScope = true;
+	bool preferRandomAccessOnArchives = true;
 	bool leaveSequentialOnLogs = true;
 
-	bool disablePowerThrottling = true;
-	bool raiseMemoryPriority = true;
+	bool disablePowerThrottling = false;
+	bool raiseMemoryPriority = false;
 	bool expandWorkingSet = false;
 	// Fraction of physical RAM allowed as max working set (0.10–0.75). 0 = skip.
 	double workingSetMaxFraction = 0.50;
 	// Min working set in MB (soft; 0 = leave Windows default min).
 	unsigned workingSetMinMB = 128;
 
-	bool hardwareProfile = true;
-	bool autoTune = true;
-	bool highEndMode = true;       // default target: modern X3D/DDR5/NVMe systems
+	bool hardwareProfile = false;
+	bool autoTune = false;
+	bool highEndMode = false;       // default target: modern X3D/DDR5/NVMe systems
 	int  gameDriveClass = 0;       // 0 = auto-detect, 1 = HDD, 2 = SATA SSD, 3 = NVMe SSD
 	bool preferFastCores = false;  // legacy whole-process hint, still opt-in
-	bool placeWarmThreadsOnBackgroundCores = true;
+	bool placeWarmThreadsOnBackgroundCores = false;
 
-	bool enableWarmCache = true;
-	unsigned warmCacheDelaySecs = 12;
-	unsigned warmCacheMaxFiles = 512;
+	bool enableWarmCache = false;
+	unsigned warmCacheDelaySecs = 60;
+	unsigned warmCacheMaxFiles = 128;
 	unsigned warmCacheBytesPerFileMB = 8;
-	unsigned warmCacheBudgetMB = 0;   // total budget; 0 = auto from profile
-	unsigned warmCacheThreads = 0;    // 0 = auto (NVMe 4 / SATA SSD 2 / HDD 1)
+	unsigned warmCacheBudgetMB = 512; // hard total budget; 0 = conservative auto
+	unsigned warmCacheThreads = 1;    // explicit by default; auto never exceeds 2
 	bool warmCacheMappedPrefetch = true;
 	bool warmCacheLowIoPriority = true;
 	bool warmCacheStridedPrefetch = true;
@@ -119,7 +126,7 @@ struct Settings {
 	bool stopWarmCacheOnMemoryPressure = true;
 	int warmCacheThreadPriority = THREAD_PRIORITY_LOWEST;
 
-	bool directStorageProbe = true;
+	bool directStorageProbe = false;
 	bool directStorageWarmRead = false; // experimental: raw read, not OS cache population
 	unsigned directStorageQueueCapacity = 128;
 	unsigned directStorageBatchMB = 64;
@@ -239,6 +246,49 @@ static bool ParseBool(const char* v, bool def)
 	return def;
 }
 
+static unsigned ParseUnsigned(const char* v, unsigned def)
+{
+	if (!v || !*v)
+		return def;
+	errno = 0;
+	char* end = nullptr;
+	const long long parsed = strtoll(v, &end, 10);
+	while (end && (*end == ' ' || *end == '\t'))
+		++end;
+	if (errno == ERANGE || end == v || (end && *end) || parsed < 0 ||
+		static_cast<unsigned long long>(parsed) > UINT_MAX)
+		return def;
+	return static_cast<unsigned>(parsed);
+}
+
+static int ParseInt(const char* v, int def)
+{
+	if (!v || !*v)
+		return def;
+	errno = 0;
+	char* end = nullptr;
+	const long parsed = strtol(v, &end, 10);
+	while (end && (*end == ' ' || *end == '\t'))
+		++end;
+	if (errno == ERANGE || end == v || (end && *end) || parsed < INT_MIN || parsed > INT_MAX)
+		return def;
+	return static_cast<int>(parsed);
+}
+
+static double ParseDouble(const char* v, double def)
+{
+	if (!v || !*v)
+		return def;
+	errno = 0;
+	char* end = nullptr;
+	const double parsed = strtod(v, &end);
+	while (end && (*end == ' ' || *end == '\t'))
+		++end;
+	if (errno == ERANGE || end == v || (end && *end) || !std::isfinite(parsed))
+		return def;
+	return parsed;
+}
+
 static void LoadIniFromPath(const char* path)
 {
 	FILE* f = nullptr;
@@ -269,83 +319,118 @@ static void LoadIniFromPath(const char* path)
 			*--ve = 0;
 
 		if (_stricmp(key, "bEnableFileCacheHooks") == 0)
-			g_settings.enableFileCacheHooks = ParseBool(val, true);
+			g_settings.enableFileCacheHooks = ParseBool(val, g_settings.enableFileCacheHooks);
 		else if (_stricmp(key, "bEnableCreateFileW") == 0)
-			g_settings.enableCreateFileW = ParseBool(val, true);
+			g_settings.enableCreateFileW = ParseBool(val, g_settings.enableCreateFileW);
 		else if (_stricmp(key, "bEnableCreateFileA") == 0)
-			g_settings.enableCreateFileA = ParseBool(val, true);
+			g_settings.enableCreateFileA = ParseBool(val, g_settings.enableCreateFileA);
 		else if (_stricmp(key, "bStripNoBuffering") == 0)
-			g_settings.stripNoBuffering = ParseBool(val, true);
-		else if (_stricmp(key, "bPreferRandomAccessOnAssets") == 0)
-			g_settings.preferRandomAccessOnAssets = ParseBool(val, true);
+			g_settings.stripNoBuffering = ParseBool(val, g_settings.stripNoBuffering);
+		else if (_stricmp(key, "bConservativeHookScope") == 0)
+			g_settings.conservativeHookScope = ParseBool(val, g_settings.conservativeHookScope);
+		else if (_stricmp(key, "bPreferRandomAccessOnArchives") == 0 ||
+			_stricmp(key, "bPreferRandomAccessOnAssets") == 0)
+			g_settings.preferRandomAccessOnArchives = ParseBool(val, g_settings.preferRandomAccessOnArchives);
 		else if (_stricmp(key, "bLeaveSequentialOnLogs") == 0)
-			g_settings.leaveSequentialOnLogs = ParseBool(val, true);
+			g_settings.leaveSequentialOnLogs = ParseBool(val, g_settings.leaveSequentialOnLogs);
 		else if (_stricmp(key, "bDisablePowerThrottling") == 0)
-			g_settings.disablePowerThrottling = ParseBool(val, true);
+			g_settings.disablePowerThrottling = ParseBool(val, g_settings.disablePowerThrottling);
 		else if (_stricmp(key, "bRaiseMemoryPriority") == 0)
-			g_settings.raiseMemoryPriority = ParseBool(val, true);
+			g_settings.raiseMemoryPriority = ParseBool(val, g_settings.raiseMemoryPriority);
 		else if (_stricmp(key, "bExpandWorkingSet") == 0)
-			g_settings.expandWorkingSet = ParseBool(val, true);
+			g_settings.expandWorkingSet = ParseBool(val, g_settings.expandWorkingSet);
 		else if (_stricmp(key, "fWorkingSetMaxFraction") == 0)
-			g_settings.workingSetMaxFraction = atof(val);
+			g_settings.workingSetMaxFraction = ParseDouble(val, g_settings.workingSetMaxFraction);
 		else if (_stricmp(key, "iWorkingSetMinMB") == 0)
-			g_settings.workingSetMinMB = (unsigned)atoi(val);
+			g_settings.workingSetMinMB = ParseUnsigned(val, g_settings.workingSetMinMB);
 		else if (_stricmp(key, "bHardwareProfile") == 0)
-			g_settings.hardwareProfile = ParseBool(val, true);
+			g_settings.hardwareProfile = ParseBool(val, g_settings.hardwareProfile);
 		else if (_stricmp(key, "bAutoTune") == 0)
-			g_settings.autoTune = ParseBool(val, true);
+			g_settings.autoTune = ParseBool(val, g_settings.autoTune);
 		else if (_stricmp(key, "iGameDriveClass") == 0)
-			g_settings.gameDriveClass = atoi(val);
+			g_settings.gameDriveClass = ParseInt(val, g_settings.gameDriveClass);
 		else if (_stricmp(key, "bPreferFastCores") == 0)
-			g_settings.preferFastCores = ParseBool(val, false);
+			g_settings.preferFastCores = ParseBool(val, g_settings.preferFastCores);
 		else if (_stricmp(key, "bEnableWarmCache") == 0)
-			g_settings.enableWarmCache = ParseBool(val, true);
+			g_settings.enableWarmCache = ParseBool(val, g_settings.enableWarmCache);
 		else if (_stricmp(key, "iWarmCacheDelaySecs") == 0)
-			g_settings.warmCacheDelaySecs = (unsigned)atoi(val);
+			g_settings.warmCacheDelaySecs = ParseUnsigned(val, g_settings.warmCacheDelaySecs);
 		else if (_stricmp(key, "iWarmCacheMaxFiles") == 0)
-			g_settings.warmCacheMaxFiles = (unsigned)atoi(val);
+			g_settings.warmCacheMaxFiles = ParseUnsigned(val, g_settings.warmCacheMaxFiles);
 		else if (_stricmp(key, "iWarmCacheBytesPerFileMB") == 0)
-			g_settings.warmCacheBytesPerFileMB = (unsigned)atoi(val);
+			g_settings.warmCacheBytesPerFileMB = ParseUnsigned(val, g_settings.warmCacheBytesPerFileMB);
 		else if (_stricmp(key, "iWarmCacheBudgetMB") == 0)
-			g_settings.warmCacheBudgetMB = (unsigned)atoi(val);
+			g_settings.warmCacheBudgetMB = ParseUnsigned(val, g_settings.warmCacheBudgetMB);
 		else if (_stricmp(key, "iWarmCacheThreads") == 0)
-			g_settings.warmCacheThreads = (unsigned)atoi(val);
+			g_settings.warmCacheThreads = ParseUnsigned(val, g_settings.warmCacheThreads);
 		else if (_stricmp(key, "bWarmCacheMappedPrefetch") == 0)
-			g_settings.warmCacheMappedPrefetch = ParseBool(val, true);
+			g_settings.warmCacheMappedPrefetch = ParseBool(val, g_settings.warmCacheMappedPrefetch);
 		else if (_stricmp(key, "bWarmCacheLowIoPriority") == 0)
-			g_settings.warmCacheLowIoPriority = ParseBool(val, true);
+			g_settings.warmCacheLowIoPriority = ParseBool(val, g_settings.warmCacheLowIoPriority);
 		else if (_stricmp(key, "bHighEndMode") == 0)
-			g_settings.highEndMode = ParseBool(val, true);
+			g_settings.highEndMode = ParseBool(val, g_settings.highEndMode);
 		else if (_stricmp(key, "bPlaceWarmThreadsOnBackgroundCores") == 0)
-			g_settings.placeWarmThreadsOnBackgroundCores = ParseBool(val, true);
+			g_settings.placeWarmThreadsOnBackgroundCores = ParseBool(val, g_settings.placeWarmThreadsOnBackgroundCores);
 		else if (_stricmp(key, "bWarmCacheStridedPrefetch") == 0)
-			g_settings.warmCacheStridedPrefetch = ParseBool(val, true);
+			g_settings.warmCacheStridedPrefetch = ParseBool(val, g_settings.warmCacheStridedPrefetch);
 		else if (_stricmp(key, "iWarmCacheStrideMB") == 0)
-			g_settings.warmCacheStrideMB = (unsigned)atoi(val);
+			g_settings.warmCacheStrideMB = ParseUnsigned(val, g_settings.warmCacheStrideMB);
 		else if (_stricmp(key, "iWarmCacheReserveMB") == 0)
-			g_settings.warmCacheReserveMB = (unsigned)atoi(val);
+			g_settings.warmCacheReserveMB = ParseUnsigned(val, g_settings.warmCacheReserveMB);
 		else if (_stricmp(key, "bStopWarmCacheOnMemoryPressure") == 0)
-			g_settings.stopWarmCacheOnMemoryPressure = ParseBool(val, true);
+			g_settings.stopWarmCacheOnMemoryPressure = ParseBool(val, g_settings.stopWarmCacheOnMemoryPressure);
 		else if (_stricmp(key, "bDirectStorageProbe") == 0)
-			g_settings.directStorageProbe = ParseBool(val, true);
+			g_settings.directStorageProbe = ParseBool(val, g_settings.directStorageProbe);
 		else if (_stricmp(key, "bDirectStorageWarmRead") == 0)
-			g_settings.directStorageWarmRead = ParseBool(val, false);
+			g_settings.directStorageWarmRead = ParseBool(val, g_settings.directStorageWarmRead);
 		else if (_stricmp(key, "iDirectStorageQueueCapacity") == 0)
-			g_settings.directStorageQueueCapacity = (unsigned)atoi(val);
+			g_settings.directStorageQueueCapacity = ParseUnsigned(val, g_settings.directStorageQueueCapacity);
 		else if (_stricmp(key, "iDirectStorageBatchMB") == 0)
-			g_settings.directStorageBatchMB = (unsigned)atoi(val);
+			g_settings.directStorageBatchMB = ParseUnsigned(val, g_settings.directStorageBatchMB);
 		else if (_stricmp(key, "iDirectStorageTimeoutMs") == 0)
-			g_settings.directStorageTimeoutMs = (unsigned)atoi(val);
+			g_settings.directStorageTimeoutMs = ParseUnsigned(val, g_settings.directStorageTimeoutMs);
 		else if (_stricmp(key, "bLogToFile") == 0)
-			g_settings.logToFile = ParseBool(val, true);
+			g_settings.logToFile = ParseBool(val, g_settings.logToFile);
 		else if (_stricmp(key, "bLogEveryOpen") == 0)
-			g_settings.logEveryOpen = ParseBool(val, false);
+			g_settings.logEveryOpen = ParseBool(val, g_settings.logEveryOpen);
 		else if (_stricmp(key, "bLogStatsOnExit") == 0)
-			g_settings.logStatsOnExit = ParseBool(val, false);
+			g_settings.logStatsOnExit = ParseBool(val, g_settings.logStatsOnExit);
 		else if (_stricmp(key, "bLogStatsAfterWarm") == 0)
-			g_settings.logStatsAfterWarm = ParseBool(val, true);
+			g_settings.logStatsAfterWarm = ParseBool(val, g_settings.logStatsAfterWarm);
 	}
 	fclose(f);
+}
+
+static unsigned ClampUnsigned(unsigned value, unsigned lo, unsigned hi)
+{
+	return std::max(lo, std::min(value, hi));
+}
+
+static void SanitizeSettings()
+{
+	if (!std::isfinite(g_settings.workingSetMaxFraction))
+		g_settings.workingSetMaxFraction = 0.50;
+	g_settings.workingSetMaxFraction =
+		std::max(0.10, std::min(g_settings.workingSetMaxFraction, 0.75));
+	g_settings.workingSetMinMB = ClampUnsigned(g_settings.workingSetMinMB, 0, 16384);
+	g_settings.gameDriveClass = std::max(0, std::min(g_settings.gameDriveClass, 3));
+
+	// Prevent malformed or negative INI values (atoi -> unsigned wrap) from
+	// turning an optional prefetch into an unbounded delay, allocation, or I/O burst.
+	g_settings.warmCacheDelaySecs = ClampUnsigned(g_settings.warmCacheDelaySecs, 0, 3600);
+	g_settings.warmCacheMaxFiles = ClampUnsigned(g_settings.warmCacheMaxFiles, 0, 4096);
+	g_settings.warmCacheBytesPerFileMB = ClampUnsigned(g_settings.warmCacheBytesPerFileMB, 1, 256);
+	g_settings.warmCacheBudgetMB = ClampUnsigned(g_settings.warmCacheBudgetMB, 0, 16384);
+	g_settings.warmCacheThreads = ClampUnsigned(g_settings.warmCacheThreads, 0, 8);
+	g_settings.warmCacheStrideMB = ClampUnsigned(g_settings.warmCacheStrideMB, 32, 4096);
+	g_settings.warmCacheReserveMB = ClampUnsigned(g_settings.warmCacheReserveMB, 0, 131072);
+	g_settings.directStorageQueueCapacity =
+		ClampUnsigned(g_settings.directStorageQueueCapacity, 32, 8192);
+	g_settings.directStorageBatchMB = ClampUnsigned(g_settings.directStorageBatchMB, 8, 256);
+	g_settings.directStorageTimeoutMs = ClampUnsigned(g_settings.directStorageTimeoutMs, 1000, 120000);
+
+	if (!g_settings.directStorageProbe)
+		g_settings.directStorageWarmRead = false;
 }
 
 static void LoadSettings()
@@ -360,33 +445,43 @@ static void LoadSettings()
 		ini += "NextGenDiskCache.ini";
 		LoadIniFromPath(ini.c_str());
 	}
+	SanitizeSettings();
 }
 
 // ---------------------------------------------------------------------------
 // Path classification
 // ---------------------------------------------------------------------------
-enum class PathKind { Asset, LogOrTemp, Save, Other };
+enum class PathKind { Archive, Asset, LogOrTemp, Save, Other };
 
 static PathKind ClassifyExt(const char* e)
 {
-	// Logs / temp / pure append - leave sequential scan alone if present
+	// Logs / temp / pure append: preserve caller-selected sequential behavior.
 	if (strcmp(e, ".log") == 0 || strcmp(e, ".tmp") == 0 || strcmp(e, ".temp") == 0 ||
 		strcmp(e, ".dmp") == 0 || strcmp(e, ".txt") == 0)
 		return PathKind::LogOrTemp;
 
-	// Save games and SKSE cosaves - durability-sensitive files whose writers
-	// deliberately choose their flags (e.g. S.L.A.C.K. uses unbuffered,
-	// write-through I/O for cosaves). Never rewrite these requests.
+	// Save games, cosaves, backups, and common state databases are durability-
+	// sensitive. Never rewrite these requests, even for read-only opens.
 	if (strcmp(e, ".skse") == 0 || strcmp(e, ".cosave") == 0 ||
-		strcmp(e, ".ess") == 0 || strcmp(e, ".bak") == 0)
+		strcmp(e, ".ess") == 0 || strcmp(e, ".bak") == 0 ||
+		strcmp(e, ".journal") == 0 || strcmp(e, ".sqlite") == 0 ||
+		strcmp(e, ".sqlite3") == 0 || strcmp(e, ".db-wal") == 0 ||
+		strcmp(e, ".db-shm") == 0)
 		return PathKind::Save;
 
-	// Game / mod assets that benefit from OS cache + random access
+	// The conservative default modifies only Bethesda archives. Their internal
+	// block lookup is genuinely non-sequential and is the narrowest defensible
+	// continuation of the original Disk Cache Enabler behavior.
+	if (strcmp(e, ".bsa") == 0 || strcmp(e, ".ba2") == 0)
+		return PathKind::Archive;
+
+	// Known game assets. In broad/advanced mode NO_BUFFERING may be removed from
+	// synchronous read-only opens, but RANDOM_ACCESS is still reserved for archives.
 	static const char* kAssets[] = {
-		".bsa", ".ba2", ".esm", ".esp", ".esl",
+		".esm", ".esp", ".esl",
 		".nif", ".dds", ".hkx", ".tri", ".fuz", ".lip", ".xwm", ".wav",
 		".pex", ".psc", ".swf", ".gfx", ".seq",
-		".ini", ".json", ".bin", ".dat", ".db",
+		".ini", ".json", ".toml", ".yaml", ".yml", ".bin", ".dat", ".db",
 		nullptr
 	};
 	for (int i = 0; kAssets[i]; ++i) {
@@ -400,7 +495,6 @@ static PathKind ClassifyPathA(const char* path)
 {
 	if (!path || !*path)
 		return PathKind::Other;
-	// extension only from final component
 	const char* dot = nullptr;
 	for (const char* p = path; *p; ++p) {
 		if (*p == '.')
@@ -420,8 +514,6 @@ static PathKind ClassifyPathA(const char* path)
 
 static PathKind ClassifyPathW(const wchar_t* path)
 {
-	// Extract the extension in wide chars first - converting the whole path to
-	// a fixed buffer truncated long mod paths and lost the extension entirely.
 	if (!path || !*path)
 		return PathKind::Other;
 	const wchar_t* dot = nullptr;
@@ -436,51 +528,94 @@ static PathKind ClassifyPathW(const wchar_t* path)
 	char e[16] = {};
 	size_t n = 0;
 	for (const wchar_t* p = dot; *p && n + 1 < sizeof(e); ++p) {
-		wchar_t c = *p;
+		const wchar_t c = *p;
 		if (c > 127)
-			return PathKind::Other; // non-ASCII extension - not a game asset type
+			return PathKind::Other;
 		e[n++] = (char)tolower((int)c);
 	}
 	e[n] = 0;
 	return ClassifyExt(e);
 }
 
-static DWORD PatchFlags(DWORD flags, DWORD desiredAccess, PathKind kind)
+static DWORD ComputePatchedFlags(
+	DWORD flags,
+	DWORD desiredAccess,
+	DWORD creationDisposition,
+	PathKind kind)
 {
-	// Save games / cosaves and log/temp files: honor the caller's flags exactly.
-	// Stripping NO_BUFFERING or forcing RANDOM_ACCESS here defeats deliberate
-	// durability designs (S.L.A.C.K. cosaves) and sequential dump/log writers.
-	if (kind == PathKind::Save || kind == PathKind::LogOrTemp)
+	// Unknown extensions, saves/state, logs/temp, and known loose assets in the
+	// default conservative mode are outside this plugin's authority.
+	const bool eligibleKind = kind == PathKind::Archive ||
+		(!g_settings.conservativeHookScope && kind == PathKind::Asset);
+	if (!eligibleKind)
 		return flags;
 
-	// A disk-cache mod optimizes buffered READ paths - nothing else. Handles
-	// opened with any write/delete intent, OVERLAPPED, or WRITE_THROUGH keep
-	// the caller's flags regardless of extension: stripping NO_BUFFERING from
-	// an OVERLAPPED handle can turn an expected-async completion synchronous
-	// (latent use-after-free in fragile callers), and write-through writers
-	// (crash-safe cosaves, journals, mod state files) chose their flags for
-	// durability, not throughput. This is extension-independent on purpose -
-	// 1.2.1's save-extension carve-out could not cover files it never heard of.
+	// Only existing files opened for synchronous reads are eligible. This keeps
+	// create/truncate/delete semantics and every write-capable or async handle intact.
+	if (creationDisposition != OPEN_EXISTING)
+		return flags;
 	const DWORD kWriteIntent = GENERIC_WRITE | GENERIC_ALL | MAXIMUM_ALLOWED |
 		FILE_WRITE_DATA | FILE_APPEND_DATA | DELETE;
-	if ((desiredAccess & kWriteIntent) != 0 ||
-		(flags & (FILE_FLAG_OVERLAPPED | FILE_FLAG_WRITE_THROUGH)) != 0) {
-		g_opensLeftUntouched.fetch_add(1, std::memory_order_relaxed);
+	const DWORD kSensitiveFlags = FILE_FLAG_OVERLAPPED | FILE_FLAG_WRITE_THROUGH |
+		FILE_FLAG_DELETE_ON_CLOSE;
+	if ((desiredAccess & kWriteIntent) != 0 || (flags & kSensitiveFlags) != 0)
 		return flags;
-	}
 
 	DWORD out = flags;
-	if (g_settings.stripNoBuffering && (out & FILE_FLAG_NO_BUFFERING)) {
+	if (g_settings.stripNoBuffering)
 		out &= ~FILE_FLAG_NO_BUFFERING;
-		g_noBufferingStripped.fetch_add(1, std::memory_order_relaxed);
-	}
 
-	if (g_settings.preferRandomAccessOnAssets &&
-		kind == PathKind::Asset) {
+	// RANDOM_ACCESS is a caching hint, not a generic "faster" switch. Apply it
+	// only to container archives with internal non-sequential block access.
+	if (g_settings.preferRandomAccessOnArchives && kind == PathKind::Archive) {
 		out &= ~FILE_FLAG_SEQUENTIAL_SCAN;
 		out |= FILE_FLAG_RANDOM_ACCESS;
 	}
 	return out;
+}
+
+static DWORD PatchFlags(
+	DWORD flags,
+	DWORD desiredAccess,
+	DWORD creationDisposition,
+	PathKind kind)
+{
+	const DWORD out = ComputePatchedFlags(flags, desiredAccess, creationDisposition, kind);
+	if (out == flags) {
+		if (kind == PathKind::Archive || kind == PathKind::Asset)
+			g_opensLeftUntouched.fetch_add(1, std::memory_order_relaxed);
+		return out;
+	}
+	if ((flags & FILE_FLAG_NO_BUFFERING) && !(out & FILE_FLAG_NO_BUFFERING))
+		g_noBufferingStripped.fetch_add(1, std::memory_order_relaxed);
+	return out;
+}
+
+static bool ValidateFilePolicy()
+{
+	const Settings saved = g_settings;
+	g_settings.conservativeHookScope = true;
+	g_settings.stripNoBuffering = true;
+	g_settings.preferRandomAccessOnArchives = true;
+
+	const DWORD base = FILE_ATTRIBUTE_NORMAL | FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN;
+	const DWORD archive = ComputePatchedFlags(base, GENERIC_READ, OPEN_EXISTING, PathKind::Archive);
+	bool ok = !(archive & FILE_FLAG_NO_BUFFERING) &&
+		!(archive & FILE_FLAG_SEQUENTIAL_SCAN) && (archive & FILE_FLAG_RANDOM_ACCESS);
+	ok = ok && ComputePatchedFlags(base, GENERIC_READ, OPEN_EXISTING, PathKind::Other) == base;
+	ok = ok && ComputePatchedFlags(base, GENERIC_READ, OPEN_EXISTING, PathKind::Asset) == base;
+	ok = ok && ComputePatchedFlags(base, GENERIC_WRITE, OPEN_EXISTING, PathKind::Archive) == base;
+	ok = ok && ComputePatchedFlags(base | FILE_FLAG_OVERLAPPED, GENERIC_READ,
+		OPEN_EXISTING, PathKind::Archive) == (base | FILE_FLAG_OVERLAPPED);
+	ok = ok && ComputePatchedFlags(base, GENERIC_READ, CREATE_ALWAYS, PathKind::Archive) == base;
+	ok = ok && ComputePatchedFlags(base, GENERIC_READ, OPEN_EXISTING, PathKind::Save) == base;
+
+	g_settings.conservativeHookScope = false;
+	const DWORD broadAsset = ComputePatchedFlags(base, GENERIC_READ, OPEN_EXISTING, PathKind::Asset);
+	ok = ok && !(broadAsset & FILE_FLAG_NO_BUFFERING) &&
+		(broadAsset & FILE_FLAG_SEQUENTIAL_SCAN) && !(broadAsset & FILE_FLAG_RANDOM_ACCESS);
+	g_settings = saved;
+	return ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -505,7 +640,7 @@ static HANDLE WINAPI CreateFileA_hook(
 	DWORD flags = dwFlagsAndAttributes;
 	if (g_settings.enableFileCacheHooks && g_settings.enableCreateFileA) {
 		const PathKind kind = ClassifyPathA(lpFilename);
-		const DWORD patched = PatchFlags(flags, dwDesiredAccess, kind);
+		const DWORD patched = PatchFlags(flags, dwDesiredAccess, dwCreationDisposition, kind);
 		if (patched != flags)
 			g_opensPatched.fetch_add(1, std::memory_order_relaxed);
 		flags = patched;
@@ -530,7 +665,7 @@ static HANDLE WINAPI CreateFileW_hook(
 	DWORD flags = dwFlagsAndAttributes;
 	if (g_settings.enableFileCacheHooks && g_settings.enableCreateFileW) {
 		const PathKind kind = ClassifyPathW(lpFilename);
-		const DWORD patched = PatchFlags(flags, dwDesiredAccess, kind);
+		const DWORD patched = PatchFlags(flags, dwDesiredAccess, dwCreationDisposition, kind);
 		if (patched != flags)
 			g_opensPatched.fetch_add(1, std::memory_order_relaxed);
 		flags = patched;
@@ -1239,7 +1374,7 @@ static uint64_t WarmMappedPrefetch(HANDLE file, uint64_t fileBytes, uint64_t bud
 	}
 
 	BYTE* base = static_cast<BYTE*>(view);
-	const uint64_t chunk = 32ull << 20;
+	const uint64_t chunk = 4ull << 20;
 	const uint64_t stride = std::max<uint64_t>(chunk,
 		static_cast<uint64_t>(std::max(32u, g_settings.warmCacheStrideMB)) << 20);
 	uint64_t requested = 0;
@@ -1391,7 +1526,11 @@ static void BuildWarmPlan(WarmPlan& plan)
 	Log("WarmCache: scanning %ls", data.c_str());
 
 	const unsigned maxFiles = g_settings.warmCacheMaxFiles;
-	const wchar_t* patterns[] = { L"\\*.bsa", L"\\*.ba2", L"\\*.esm", L"\\*.esl", L"\\*.esp" };
+	if (!maxFiles) {
+		Log("WarmCache: iWarmCacheMaxFiles=0; nothing to do");
+		return;
+	}
+	const wchar_t* patterns[] = { L"\\*.bsa", L"\\*.ba2" };
 	for (const wchar_t* pat : patterns) {
 		WIN32_FIND_DATAW fd{};
 		std::wstring query = data + pat;
@@ -1413,9 +1552,11 @@ static void BuildWarmPlan(WarmPlan& plan)
 			break;
 	}
 
-	// Prefer larger archives first (more benefit per open).
+	// Stable alphabetical coverage avoids privileging a few giant archives that
+	// may be irrelevant to the current save. The warmer is intentionally blind
+	// to save-specific asset use, so the default remains disabled.
 	std::sort(plan.files.begin(), plan.files.end(),
-		[](const auto& a, const auto& b) { return a.second > b.second; });
+		[](const auto& a, const auto& b) { return _wcsicmp(a.first.c_str(), b.first.c_str()) < 0; });
 
 	// --- budget / threads / per-file cap ---
 	MEMORYSTATUSEX ms{};
@@ -1430,57 +1571,27 @@ static void BuildWarmPlan(WarmPlan& plan)
 	const bool haveProfile = g_settings.hardwareProfile;
 	const bool tune = g_settings.autoTune && haveProfile;
 
-	uint64_t budgetMB;
-	if (g_settings.warmCacheBudgetMB) {
-		budgetMB = g_settings.warmCacheBudgetMB;
-	} else if (tune) {
-		const uint64_t reserveMB = AutomaticMemoryReserveMB(totalMB);
-		if (g_settings.highEndMode) {
-			budgetMB = totalMB >= 60 * 1024 ? 12288
-				: totalMB >= 30 * 1024 ? 6144
-				: totalMB >= 14 * 1024 ? 2048
-				: 768;
-		} else {
-			budgetMB = totalMB >= 60 * 1024 ? 8192
-				: totalMB >= 30 * 1024 ? 4096
-				: totalMB >= 14 * 1024 ? 1536
-				: 512;
-		}
-		if (drive == HardwareProfile::Drive::HDD)
-			budgetMB = std::min<uint64_t>(budgetMB, 256);
-		const uint64_t usableMB = availMB > reserveMB ? availMB - reserveMB : 0;
-		budgetMB = std::min(budgetMB, usableMB);
-	} else {
-		// Legacy 1.0.x behavior: per-file cap × file count is the only limit.
-		budgetMB = (uint64_t)g_settings.warmCacheBytesPerFileMB * std::max<size_t>(plan.files.size(), 1);
-	}
+	// Auto-tune may only reduce pressure; it never silently expands a user's
+	// configured budget into a multi-gigabyte startup read.
+	uint64_t budgetMB = g_settings.warmCacheBudgetMB;
+	if (!budgetMB)
+		budgetMB = g_settings.highEndMode ? 1024 : 512;
+	const uint64_t reserveMB = AutomaticMemoryReserveMB(totalMB);
+	const uint64_t usableMB = availMB > reserveMB ? availMB - reserveMB : 0;
+	budgetMB = std::min(budgetMB, usableMB);
+	if (tune && drive == HardwareProfile::Drive::HDD)
+		budgetMB = std::min<uint64_t>(budgetMB, 256);
 
-	uint64_t perFileMB = g_settings.warmCacheBytesPerFileMB;
-	if (tune) {
-		const uint64_t byDrive = drive == HardwareProfile::Drive::NvmeSsd
-			? (g_settings.highEndMode ? 256 : 128)
-			: drive == HardwareProfile::Drive::SataSsd ? 64
-			: drive == HardwareProfile::Drive::HDD ? 8
-			: 32;
-		perFileMB = std::max(perFileMB, byDrive);
-	}
+	const uint64_t perFileMB = g_settings.warmCacheBytesPerFileMB;
 
 	unsigned threads = g_settings.warmCacheThreads;
 	if (!threads) {
-		if (tune) {
-			if (drive == HardwareProfile::Drive::NvmeSsd) {
-				const unsigned cpuScale = std::max(4u, std::min(8u, g_hw.logicalCores / 4));
-				threads = g_settings.highEndMode ? cpuScale : std::min(4u, cpuScale);
-			} else {
-				threads = drive == HardwareProfile::Drive::SataSsd ? 2 : 1;
-			}
-		} else {
-			threads = 1;
-		}
+		threads = tune && drive == HardwareProfile::Drive::NvmeSsd &&
+			g_settings.highEndMode ? 2 : 1;
 	}
 	if (g_settings.directStorageWarmRead && DirectStorageAvailable())
 		threads = 1; // DirectStorage batches internally through one queue.
-	threads = std::max(1u, std::min({ threads, 8u, (unsigned)std::max<size_t>(plan.files.size(), 1) }));
+	threads = std::max(1u, std::min({ threads, 2u, (unsigned)std::max<size_t>(plan.files.size(), 1) }));
 
 	plan.budgetBytes = budgetMB << 20;
 	plan.perFileBytes = perFileMB << 20;
@@ -1617,8 +1728,9 @@ static bool AttachHooks()
 		return false;
 	}
 	g_hooksAttached = true;
-	Log("CreateFile hooks attached (A=%d W=%d)",
-		(int)g_settings.enableCreateFileA, (int)g_settings.enableCreateFileW);
+	Log("CreateFile hooks attached (A=%d W=%d scope=%s random_access=archives_only)",
+		(int)g_settings.enableCreateFileA, (int)g_settings.enableCreateFileW,
+		g_settings.conservativeHookScope ? "archives-only" : "known-assets");
 	return true;
 }
 
@@ -1671,7 +1783,11 @@ SKSEAPI bool SKSEPlugin_Load(const SKSEInterface* skse)
 	LoadSettings();
 	OpenLog();
 	ResolveDynamicApis();
-	Log("NextGen Disk Cache " PLUGIN_VERSION_STRING " - safe SKSE load path");
+	Log("NextGen Disk Cache " PLUGIN_VERSION_STRING " - conservative SKSE load path");
+	if (!ValidateFilePolicy()) {
+		g_settings.enableFileCacheHooks = false;
+		Log("ERROR: internal file-policy self-test failed; hooks disabled");
+	}
 	if (!AttachHooks()) {
 		g_hookAttachFailed = true;
 		Log("WARNING: CreateFile hooks did not attach - running detection/hints only");
@@ -1719,6 +1835,9 @@ SKSEAPI bool SKSEPlugin_Load(const SKSEInterface* skse)
 		else
 			Log("DirectStorage: runtime not found; PrefetchVirtualMemory remains active");
 	}
+
+	if (!g_settings.enableWarmCache)
+		Log("WarmCache: disabled (safe default)");
 
 	bool expectedWarm = false;
 	if (g_settings.enableWarmCache &&

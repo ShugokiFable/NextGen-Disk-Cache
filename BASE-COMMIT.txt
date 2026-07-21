@@ -1,5 +1,7 @@
 Repository: ShugokiFable/NextGen-Disk-Cache
-Branch: main
-Base commit: 4cdae78bdd4e8e7fefed92ce3bf079ba553508e4
-Base commit message: Release 1.1.0: modern hardware profile + smarter warm cache
-Upgrade target: NextGen Disk Cache 1.2.0 source RC
+Base branch: main
+Base commit: af0ab6172ae6f19c5f8511d46cd55163948c272a
+Base version: 1.3.1
+Base commit message: Release 1.3.1: DirectStorage core-DLL load fix + read-only cache policy
+Upgrade target: NextGen Disk Cache 1.4.0 safety rework
+Prepared: 2026-07-21
