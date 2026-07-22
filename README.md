@@ -1,6 +1,16 @@
-# NextGen Disk Cache 1.4.0
+# NextGen Disk Cache 1.4.1
 
 A conservative SKSE64 derivative of **Disk Cache Enabler** by **Archost** (original Nexus upload by **enpinion**).
+
+## What changed in 1.4.1
+
+**The policy self-test is now a real guard.** In 1.4.0 it tested constants it set itself, so the optimizer folded it to `true` and deleted the failure branch — the error string was not even present in the shipped binary, meaning the advertised safety check could never fire. It now validates the invariants against your actually-loaded settings, never mutates the live policy the hooks read, and is verified present in the release binary.
+
+**Two process-scoped hints are on again by default:** `bDisablePowerThrottling` and `bRaiseMemoryPriority`. These call `SetProcessInformation` on Skyrim's own process only — unlike the file hook they cannot affect other SKSE plugins, so the 1.4.0 compatibility rationale never applied to them. Windows' EcoQoS throttling actively hurts a foreground game. `bExpandWorkingSet` stays **off**; the process working set is not the Windows file cache.
+
+**Honest statistics.** The log counter previously reported `write_or_async_left_untouched` while actually counting every unmodified archive/asset open, including ones that were never in scope. It is now `in_scope_safety_gated` and counts only handles the plugin was allowed to touch but refused for safety. The snapshot is also emitted when the warm cache is disabled — previously it was unreachable in the shipped default, so nobody could report it.
+
+Warm cache and DirectStorage remain **off by default**. Reported stutter from aggressive default prefetching is a legitimate concern and is not being reintroduced.
 
 ## What 1.4.0 actually changes
 

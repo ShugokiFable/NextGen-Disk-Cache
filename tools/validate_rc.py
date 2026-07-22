@@ -8,7 +8,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 PROFILES = ["SafeDefault", "Minimal", "ExperimentalWarmCache"]
 
 
@@ -117,7 +117,13 @@ def main() -> int:
 
     main_cpp = (ROOT / "src/main.cpp").read_text(encoding="utf-8")
     for token in [
-        'PLUGIN_VERSION_STRING "1.4.0"',
+        f'PLUGIN_VERSION_STRING "{VERSION}"',
+        # 1.4.0 shipped a self-test the optimizer folded to `true`; the failure
+        # branch was absent from the binary. These pin the 1.4.1 fix: volatile
+        # inputs and a check against the live settings keep it unfoldable.
+        "static volatile DWORD vBase",
+        "g_settings.conservativeHookScope)",
+        "IsSafetyGated(flags, desiredAccess, creationDisposition)",
         "bConservativeHookScope",
         "PathKind::Archive",
         "creationDisposition != OPEN_EXISTING",

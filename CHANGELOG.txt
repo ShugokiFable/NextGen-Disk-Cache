@@ -1,3 +1,45 @@
+NextGen Disk Cache 1.4.1
+============================================
+- Policy self-test is a real runtime guard again. The 1.4.0 version tested
+  constants it assigned itself, so MSVC /O2 folded it to `true` and removed the
+  failure branch entirely (verified: the error string was absent from the 1.4.0
+  binary while control strings were present). It now checks safety invariants
+  against the actually-loaded settings, uses volatile inputs so it cannot be
+  constant-folded, and no longer mutates the live g_settings the hooks read.
+- Re-enabled bDisablePowerThrottling and bRaiseMemoryPriority in the shipped
+  SafeDefault and ExperimentalWarmCache profiles. Both are process-scoped
+  (SetProcessInformation on GetCurrentProcess) and cannot affect other SKSE
+  plugins, so the 1.4.0 hook-compatibility rationale did not apply to them.
+  EcoQoS throttling measurably hurts a foreground game. Minimal profile keeps
+  them off by design. bExpandWorkingSet remains off in every profile.
+- Statistics counter renamed write_or_async_left_untouched ->
+  in_scope_safety_gated and corrected: it counted every unmodified archive or
+  asset open (including out-of-scope kinds) while claiming to count the
+  write/async gate. It now counts only in-scope handles refused for safety.
+- The stats snapshot is now emitted when the warm cache is disabled, via a
+  one-shot low-priority worker. Previously it was produced only by the warm
+  cache, so in the shipped default (warmer off) the counters were unreachable
+  and could never appear in a user bug report.
+- Extracted the safety gate into IsSafetyGated() so the flag policy and the
+  statistics counter cannot drift apart.
+- Validator pins the anti-folding fix (volatile self-test inputs, live-settings
+  check, shared gate) so this cannot silently regress.
+
+Verification (target rig, split-layout harness - exe in game root, plugin in
+Data\SKSE\Plugins):
+  - "internal file-policy self-test failed" now PRESENT in the /O2 binary
+    (absent in 1.4.0) - the guard can actually fire.
+  - Per-open flag transitions with bLogEveryOpen=1:
+      .bsa  read + NO_BUFFERING + SEQUENTIAL  28000080 -> 10000080 (optimized)
+      .bsa  read + NO_BUFFERING + OVERLAPPED  60000080 -> 60000080 (gated)
+      .bsa  WRITE + NO_BUFFERING              20000080 -> 20000080 (gated)
+      .esp  read + NO_BUFFERING + SEQUENTIAL  28000080 -> 28000080 (out of scope)
+      .cosave read + NO_BUFFERING             20000080 -> 20000080 (save kind)
+  - Process hints confirmed applied in log; exports/imports unchanged
+    (SETUPAPI, KERNEL32, SHELL32; three SKSEPlugin_* exports only).
+  - UNPROVEN: in-game SKSE session across 1.5.97 / 1.6.640 / 1.6.659 GOG.
+
+================================================================================
 NextGen Disk Cache 1.4.0 - Safety Rework
 ============================================
 - Default hook scope is now BSA/BA2 archives only.

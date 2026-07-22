@@ -79,8 +79,8 @@
 #define PLUGIN_NAME    "NextGen Disk Cache"
 // Original author first (Archost). Uploader on Nexus: enpinion.
 #define PLUGIN_AUTHOR  "Archost (mod: enpinion upload; derivative)"
-#define PLUGIN_VERSION ((1u << 16) | (4u << 8) | 0u) // 1.4.0
-#define PLUGIN_VERSION_STRING "1.4.0"
+#define PLUGIN_VERSION ((1u << 16) | (4u << 8) | 1u) // 1.4.1
+#define PLUGIN_VERSION_STRING "1.4.1"
 
 // ---------------------------------------------------------------------------
 // Settings (INI)
@@ -97,8 +97,13 @@ struct Settings {
 	bool preferRandomAccessOnArchives = true;
 	bool leaveSequentialOnLogs = true;
 
-	bool disablePowerThrottling = false;
-	bool raiseMemoryPriority = false;
+	// Process-scoped hints: SetProcessInformation(GetCurrentProcess(), ...) only
+	// affects Skyrim itself, so unlike the CreateFile hook these cannot influence
+	// other SKSE plugins. EcoQoS throttling actively hurts a foreground game, so
+	// clearing it is on by default. Working-set expansion stays off: the process
+	// working set is not the Windows system file cache.
+	bool disablePowerThrottling = true;
+	bool raiseMemoryPriority = true;
 	bool expandWorkingSet = false;
 	// Fraction of physical RAM allowed as max working set (0.10–0.75). 0 = skip.
 	double workingSetMaxFraction = 0.50;
@@ -145,7 +150,9 @@ static std::atomic<bool> g_shutdown{false};
 static std::atomic<uint64_t> g_opensTotal{0};
 static std::atomic<uint64_t> g_opensPatched{0};
 static std::atomic<uint64_t> g_noBufferingStripped{0};
-static std::atomic<uint64_t> g_opensLeftUntouched{0}; // write/OVERLAPPED/WRITE_THROUGH gate
+// In-scope opens refused by the safety gate (write/delete intent, OVERLAPPED,
+// WRITE_THROUGH, DELETE_ON_CLOSE, or a create/truncate disposition).
+static std::atomic<uint64_t> g_opensSafetyGated{0};
 static std::atomic<bool> g_warmStarted{false};
 static HMODULE g_selfModule = nullptr;
 static bool g_hookAttachFailed = false;
@@ -537,6 +544,21 @@ static PathKind ClassifyPathW(const wchar_t* path)
 	return ClassifyExt(e);
 }
 
+// True when a handle must never be rewritten regardless of file kind: write or
+// delete intent, async completion, write-through durability, delete-on-close,
+// or any disposition that can create/truncate. Shared by the flag computation
+// and the statistics counter so the log can never disagree with the policy.
+static bool IsSafetyGated(DWORD flags, DWORD desiredAccess, DWORD creationDisposition)
+{
+	const DWORD kWriteIntent = GENERIC_WRITE | GENERIC_ALL | MAXIMUM_ALLOWED |
+		FILE_WRITE_DATA | FILE_APPEND_DATA | DELETE;
+	const DWORD kSensitiveFlags = FILE_FLAG_OVERLAPPED | FILE_FLAG_WRITE_THROUGH |
+		FILE_FLAG_DELETE_ON_CLOSE;
+	return creationDisposition != OPEN_EXISTING ||
+		(desiredAccess & kWriteIntent) != 0 ||
+		(flags & kSensitiveFlags) != 0;
+}
+
 static DWORD ComputePatchedFlags(
 	DWORD flags,
 	DWORD desiredAccess,
@@ -552,13 +574,7 @@ static DWORD ComputePatchedFlags(
 
 	// Only existing files opened for synchronous reads are eligible. This keeps
 	// create/truncate/delete semantics and every write-capable or async handle intact.
-	if (creationDisposition != OPEN_EXISTING)
-		return flags;
-	const DWORD kWriteIntent = GENERIC_WRITE | GENERIC_ALL | MAXIMUM_ALLOWED |
-		FILE_WRITE_DATA | FILE_APPEND_DATA | DELETE;
-	const DWORD kSensitiveFlags = FILE_FLAG_OVERLAPPED | FILE_FLAG_WRITE_THROUGH |
-		FILE_FLAG_DELETE_ON_CLOSE;
-	if ((desiredAccess & kWriteIntent) != 0 || (flags & kSensitiveFlags) != 0)
+	if (IsSafetyGated(flags, desiredAccess, creationDisposition))
 		return flags;
 
 	DWORD out = flags;
@@ -581,9 +597,16 @@ static DWORD PatchFlags(
 	PathKind kind)
 {
 	const DWORD out = ComputePatchedFlags(flags, desiredAccess, creationDisposition, kind);
+	// Count only handles this plugin would otherwise have been allowed to touch
+	// but deliberately refused for safety. Opens skipped merely because of file
+	// kind (unknown extension, save, log, loose asset in conservative mode) are
+	// not "protected" - they were never in scope - and must not inflate this
+	// number, or the log stops being usable evidence in a bug report.
 	if (out == flags) {
-		if (kind == PathKind::Archive || kind == PathKind::Asset)
-			g_opensLeftUntouched.fetch_add(1, std::memory_order_relaxed);
+		const bool inScope = kind == PathKind::Archive ||
+			(!g_settings.conservativeHookScope && kind == PathKind::Asset);
+		if (inScope && IsSafetyGated(flags, desiredAccess, creationDisposition))
+			g_opensSafetyGated.fetch_add(1, std::memory_order_relaxed);
 		return out;
 	}
 	if ((flags & FILE_FLAG_NO_BUFFERING) && !(out & FILE_FLAG_NO_BUFFERING))
@@ -591,30 +614,52 @@ static DWORD PatchFlags(
 	return out;
 }
 
+// Safety invariants that must hold under EVERY configuration. Unlike the 1.4.0
+// version this is pure (it never mutates the live g_settings the hooks read)
+// and it exercises the user's ACTUAL loaded settings, so the optimizer cannot
+// prove the result and fold the failure branch away. In 1.4.0 it could: the
+// whole function reduced to `true` and the error path was absent from the
+// shipped binary, making the advertised guard unable to fail.
 static bool ValidateFilePolicy()
 {
-	const Settings saved = g_settings;
-	g_settings.conservativeHookScope = true;
-	g_settings.stripNoBuffering = true;
-	g_settings.preferRandomAccessOnArchives = true;
+	// Volatile sources defeat constant propagation into ComputePatchedFlags.
+	static volatile DWORD vBase =
+		FILE_ATTRIBUTE_NORMAL | FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN;
+	static volatile DWORD vRead = GENERIC_READ;
+	static volatile DWORD vWrite = GENERIC_WRITE;
+	const DWORD base = vBase;
+	const DWORD read = vRead;
+	const DWORD write = vWrite;
 
-	const DWORD base = FILE_ATTRIBUTE_NORMAL | FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN;
-	const DWORD archive = ComputePatchedFlags(base, GENERIC_READ, OPEN_EXISTING, PathKind::Archive);
-	bool ok = !(archive & FILE_FLAG_NO_BUFFERING) &&
-		!(archive & FILE_FLAG_SEQUENTIAL_SCAN) && (archive & FILE_FLAG_RANDOM_ACCESS);
-	ok = ok && ComputePatchedFlags(base, GENERIC_READ, OPEN_EXISTING, PathKind::Other) == base;
-	ok = ok && ComputePatchedFlags(base, GENERIC_READ, OPEN_EXISTING, PathKind::Asset) == base;
-	ok = ok && ComputePatchedFlags(base, GENERIC_WRITE, OPEN_EXISTING, PathKind::Archive) == base;
-	ok = ok && ComputePatchedFlags(base | FILE_FLAG_OVERLAPPED, GENERIC_READ,
+	bool ok = true;
+	// 1. Durability-sensitive and out-of-scope kinds are never rewritten.
+	ok = ok && ComputePatchedFlags(base, read, OPEN_EXISTING, PathKind::Save) == base;
+	ok = ok && ComputePatchedFlags(base, read, OPEN_EXISTING, PathKind::LogOrTemp) == base;
+	ok = ok && ComputePatchedFlags(base, read, OPEN_EXISTING, PathKind::Other) == base;
+	// 2. Write/delete intent is never rewritten, even for archives.
+	ok = ok && ComputePatchedFlags(base, write, OPEN_EXISTING, PathKind::Archive) == base;
+	// 3. Async completion and durability flags survive untouched.
+	ok = ok && ComputePatchedFlags(base | FILE_FLAG_OVERLAPPED, read,
 		OPEN_EXISTING, PathKind::Archive) == (base | FILE_FLAG_OVERLAPPED);
-	ok = ok && ComputePatchedFlags(base, GENERIC_READ, CREATE_ALWAYS, PathKind::Archive) == base;
-	ok = ok && ComputePatchedFlags(base, GENERIC_READ, OPEN_EXISTING, PathKind::Save) == base;
-
-	g_settings.conservativeHookScope = false;
-	const DWORD broadAsset = ComputePatchedFlags(base, GENERIC_READ, OPEN_EXISTING, PathKind::Asset);
-	ok = ok && !(broadAsset & FILE_FLAG_NO_BUFFERING) &&
-		(broadAsset & FILE_FLAG_SEQUENTIAL_SCAN) && !(broadAsset & FILE_FLAG_RANDOM_ACCESS);
-	g_settings = saved;
+	ok = ok && ComputePatchedFlags(base | FILE_FLAG_WRITE_THROUGH, read,
+		OPEN_EXISTING, PathKind::Archive) == (base | FILE_FLAG_WRITE_THROUGH);
+	ok = ok && ComputePatchedFlags(base | FILE_FLAG_DELETE_ON_CLOSE, read,
+		OPEN_EXISTING, PathKind::Archive) == (base | FILE_FLAG_DELETE_ON_CLOSE);
+	// 4. Anything that can create or truncate is never rewritten.
+	ok = ok && ComputePatchedFlags(base, read, CREATE_ALWAYS, PathKind::Archive) == base;
+	ok = ok && ComputePatchedFlags(base, read, TRUNCATE_EXISTING, PathKind::Archive) == base;
+	// 5. RANDOM_ACCESS stays archive-only in every mode, including broad mode.
+	ok = ok && !(ComputePatchedFlags(base, read, OPEN_EXISTING, PathKind::Asset) &
+		FILE_FLAG_RANDOM_ACCESS);
+	// 6. Conservative scope really does exclude loose assets when enabled.
+	if (g_settings.conservativeHookScope)
+		ok = ok && ComputePatchedFlags(base, read, OPEN_EXISTING, PathKind::Asset) == base;
+	// 7. When hooks and stripping are both on, an eligible archive read is
+	//    actually optimized - otherwise the plugin is silently doing nothing.
+	if (g_settings.enableFileCacheHooks && g_settings.stripNoBuffering) {
+		const DWORD archive = ComputePatchedFlags(base, read, OPEN_EXISTING, PathKind::Archive);
+		ok = ok && !(archive & FILE_FLAG_NO_BUFFERING);
+	}
 	return ok;
 }
 
@@ -1644,11 +1689,11 @@ static void WarmCacheCoordinator()
 		plan.threads, plan.threads == 1 ? "" : "s");
 	if (g_settings.logStatsAfterWarm) {
 		Log("Stats snapshot: opens=%llu patched=%llu no_buffering_stripped=%llu "
-			"write_or_async_left_untouched=%llu warm_read=%llu MB",
+			"in_scope_safety_gated=%llu warm_read=%llu MB",
 			(unsigned long long)g_opensTotal.load(),
 			(unsigned long long)g_opensPatched.load(),
 			(unsigned long long)g_noBufferingStripped.load(),
-			(unsigned long long)g_opensLeftUntouched.load(),
+			(unsigned long long)g_opensSafetyGated.load(),
 			(unsigned long long)(g_warmBytes.load() >> 20));
 	}
 }
@@ -1844,6 +1889,26 @@ SKSEAPI bool SKSEPlugin_Load(const SKSEInterface* skse)
 		g_warmStarted.compare_exchange_strong(expectedWarm, true)) {
 		std::thread(WarmCacheCoordinator).detach();
 		Log("WarmCache thread started (delay %u s)", g_settings.warmCacheDelaySecs);
+	} else if (g_settings.logStatsAfterWarm) {
+		// The warm cache normally emits the stats snapshot, but it ships disabled,
+		// which left the hook counters unreachable in the default configuration -
+		// exactly the evidence a bug report needs. Emit them once from a one-shot
+		// low-priority worker instead. Exit-time logging is deliberately not used:
+		// that would put file I/O under the loader lock.
+		std::thread([] {
+			SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+			for (unsigned i = 0; i < 600 && !g_shutdown.load(std::memory_order_relaxed); ++i)
+				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+			if (g_shutdown.load(std::memory_order_relaxed))
+				return;
+			Log("Stats snapshot: opens=%llu patched=%llu no_buffering_stripped=%llu "
+				"in_scope_safety_gated=%llu warm_read=%llu MB",
+				(unsigned long long)g_opensTotal.load(),
+				(unsigned long long)g_opensPatched.load(),
+				(unsigned long long)g_noBufferingStripped.load(),
+				(unsigned long long)g_opensSafetyGated.load(),
+				(unsigned long long)(g_warmBytes.load() >> 20));
+		}).detach();
 	}
 
 	Log("NextGen Disk Cache " PLUGIN_VERSION_STRING
