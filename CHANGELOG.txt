@@ -1,3 +1,79 @@
+NextGen Disk Cache 2.0.0 - narrow IAT hook, one FOMOD, unified versioning
+============================================
+Responds to an independent audit of 1.4.1 (2026-07-22). Accepted findings:
+
+- HOOK SCOPE (accepted). 1.4.x attached Detours trampolines to CreateFileA/W,
+  which intercepts every module in the process including unrelated SKSE
+  plugins. Default is now an Import Address Table hook applied ONLY to
+  SkyrimSE.exe's own imports, so other modules keep their own IAT and are
+  never intercepted. New src/IatHook.cpp parses the PE import directory by
+  hand (no DbgHelp import added). Process-wide Detours is retained behind
+  iHookScope=1 for the Experimental profile.
+  Verified by A/B test: with an auxiliary DLL opening the same archive with
+  identical flags, Safe logged ONLY the executable's own open; Experimental
+  logged both. If the executable has no importable slot the plugin logs
+  "IAT hook was not installed; plugin left inert" and does NOT silently
+  escalate to a process-wide trampoline.
+
+- bRaiseMemoryPriority (accepted, my error). It sets MEMORY_PRIORITY_NORMAL
+  (5), which Microsoft documents as the default for every process and thread,
+  so it is a no-op unless something else lowered it. 1.4.1 enabled it and
+  described it as a performance improvement; that was wrong. Now ships OFF in
+  every profile, with the reason stated in code and INI.
+
+- bDisablePowerThrottling (accepted). It genuinely opts the process out of
+  EcoQoS execution-speed throttling, but that is a process-wide scheduling
+  policy with no measured disk-cache benefit. Moved out of the default and
+  into the Experimental profile only.
+
+- RANDOM_ACCESS hint (partially accepted). Kept archive-only in Safe, since a
+  BSA is read by seeking to internal blocks, but the Minimal profile now ships
+  it OFF so users can run strip-NO_BUFFERING-only until it is benchmarked.
+
+- Warm cache and DirectStorage remain OFF in every shipped profile.
+
+Not accepted, with evidence:
+- The reported hash "discrepancy" was two legitimate builds of the same commit.
+  e39502a8/6fda7749 is the local VS2026 build; 5cb68bab/5ac34c5f is the CI
+  VS2022 build attached to the GitHub release. The 1.4.1 release notes already
+  stated MSVC output is not bit-identical across toolchains. To remove the
+  ambiguity entirely, only the CI artifact is published from now on.
+
+Also in this release:
+- Versioning unified. Nexus 1.1.2/1.1.3 used a different scheme from the repo
+  tags, making user reports impossible to map to a commit. DLL, git tag and
+  Nexus file version are now the same number. Mapping recorded in
+  MEMORY/NEXUS-VERSION-MAP.md: Nexus 1.1.2 = repo 1.3.0; Nexus 1.1.3 = a
+  narrow IAT build whose source was never published (see below).
+- One FOMOD now carries Safe / Minimal / Experimental instead of separate
+  Nexus files, with the trade-offs written into the installer descriptions.
+- All 1.4.1 correctness work retained: unfoldable policy self-test, pure
+  (non-mutating) self-test, IsSafetyGated() shared by policy and counters,
+  honest in_scope_safety_gated counter, stats reachable with the warmer off.
+
+PROVENANCE WARNING recorded during this release:
+  The Nexus 1.1.3 main file (SHA-256 8252ee1b...) is byte-identical to the
+  192 KB DLL in NextGenDiskCache-1.4.0-Safety-Rework, which was flagged on
+  2026-07-21 as not built from published source. It imports only KERNEL32 +
+  dynamic UCRT (the repo source needs SETUPAPI + SHELL32 and links a static
+  CRT), emits strings the repo source never contains, and no source for it
+  exists in the repository or anywhere in the workspace. It cannot be rebuilt
+  by anyone. 2.0.0 exists partly to replace it with an equivalent narrow build
+  that IS reproducible from public source.
+
+Verification (target rig, split-layout harness):
+  - Safe (iHookScope=0): IAT hook installed into KERNEL32.dll entries of the
+    main executable. EXE's own open .bsa 28000080 -> 10000080 (optimized);
+    identical open issued from a separate DLL produced NO log entry.
+  - Experimental (iHookScope=1): both opens intercepted (2 entries).
+  - Self-test failure string present in the /O2 binary.
+  - build.ps1 VS18 green; validate_rc.py PASS (now pins IAT-default,
+    per-profile iHookScope, and the anti-folding tokens);
+    package-release.ps1 gates PASS.
+  - UNPROVEN: in-game SKSE session on 1.5.97 / 1.6.640 / 1.6.659 GOG, and any
+    comparative benchmark of Safe vs Experimental.
+
+================================================================================
 NextGen Disk Cache 1.4.1
 ============================================
 - Policy self-test is a real runtime guard again. The 1.4.0 version tested

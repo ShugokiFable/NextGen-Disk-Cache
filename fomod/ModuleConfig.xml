@@ -1,27 +1,37 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
-  <moduleName>NextGen Disk Cache 1.4.1</moduleName>
+  <moduleName>NextGen Disk Cache 2.0.0</moduleName>
   <requiredInstallFiles>
     <folder source="Core" destination="" priority="0" />
   </requiredInstallFiles>
   <installSteps order="Explicit">
-    <installStep name="Safety profile">
+    <installStep name="Choose a build">
       <optionalFileGroups order="Explicit">
-        <group name="Choose one configuration" type="SelectExactlyOne">
+        <group name="Safe or Experimental" type="SelectExactlyOne">
           <plugins order="Explicit">
-            <plugin name="Safe Default (Recommended)">
-              <description>Archive-only synchronous read policy. Warm cache and DirectStorage probing are disabled. Recommended for normal play and long-term saves.</description>
+            <plugin name="Safe (Recommended)">
+              <description>The narrow build. Hooks ONLY the CreateFileA/CreateFileW entries in SkyrimSE.exe's own import table, so file operations made by other SKSE plugins never reach this mod. Rewrites only existing, synchronous, read-only .bsa/.ba2 opens: removes FILE_FLAG_NO_BUFFERING so Windows can cache archive reads, and applies the archive-only random-access hint.
+
+Saves, cosaves, journals, databases, logs, temp files, plugins, loose meshes/textures/audio and unknown extensions are never touched, and neither is any write, create, truncate, overlapped, write-through or delete-on-close handle.
+
+No warm cache, no DirectStorage, no hardware probing, no process-wide tweaks. Use this for normal play and long-term saves.</description>
               <files><folder source="Profiles\SafeDefault" destination="SKSE\Plugins" priority="10" /></files>
               <typeDescriptor><type name="Recommended" /></typeDescriptor>
             </plugin>
-            <plugin name="Minimal Compatibility">
-              <description>Archive-only hook with all process, hardware, warm-cache, and DirectStorage extras disabled. Use when isolating compatibility problems.</description>
+            <plugin name="Minimal (troubleshooting)">
+              <description>Safe, minus the random-access hint. Strips FILE_FLAG_NO_BUFFERING from archive reads and does nothing else at all. Use this when isolating a compatibility problem, or if you want the smallest possible behavioural change.</description>
               <files><folder source="Profiles\Minimal" destination="SKSE\Plugins" priority="10" /></files>
               <typeDescriptor><type name="Optional" /></typeDescriptor>
             </plugin>
-            <plugin name="Experimental Bounded Warm Cache">
-              <description>Safe archive hook plus an opt-in 512 MB, one-thread prefetch after 60 seconds. Benchmark before keeping it.</description>
+            <plugin name="Experimental (unproven - benchmark it)">
+              <description>Everything in Safe, plus three opt-in changes that are NOT proven to help:
+
+- PROCESS-WIDE hook (Detours) instead of the executable's import table. File opens from other SKSE plugins pass through this mod's policy. The policy declines almost all of them, but this is a genuine compatibility surface.
+- Bounded warm cache: 512 MB total, 8 MB per archive, one low-priority thread, starting 60 seconds after load. It cannot know which archives your save needs, and background disk activity is a plausible microstutter cause.
+- Disables EcoQoS power throttling for the Skyrim process.
+
+Benchmark this against Safe on your own system and save. If you cannot measure a difference, use Safe.</description>
               <files><folder source="Profiles\ExperimentalWarmCache" destination="SKSE\Plugins" priority="10" /></files>
               <typeDescriptor><type name="Optional" /></typeDescriptor>
             </plugin>
@@ -34,11 +44,11 @@
         <group name="Bundle Microsoft DirectStorage 1.3" type="SelectExactlyOne">
           <plugins order="Explicit">
             <plugin name="Do not bundle runtime (Recommended)">
-              <description>DirectStorage is not required for the normal Windows file-cache policy and probing ships disabled.</description>
+              <description>DirectStorage is not used by any shipped profile. Its raw-read path fills scratch memory and discards it, which does not populate the Windows cache Skyrim actually reads from. Leave this alone unless you are developing against it.</description>
               <typeDescriptor><type name="Recommended" /></typeDescriptor>
             </plugin>
-            <plugin name="Install DirectStorage 1.3 runtime">
-              <description>Advanced testing only. The runtime remains inactive unless both bDirectStorageProbe and bDirectStorageWarmRead are manually enabled.</description>
+            <plugin name="Install DirectStorage 1.3 runtime (advanced)">
+              <description>Adds roughly 1.7 MB of Microsoft redistributable DLLs beside the plugin. They stay dormant unless you manually set both bDirectStorageProbe and bDirectStorageWarmRead. No shipped profile enables them.</description>
               <files><folder source="Optional\DirectStorage" destination="SKSE\Plugins" priority="20" /></files>
               <typeDescriptor><type name="Optional" /></typeDescriptor>
             </plugin>

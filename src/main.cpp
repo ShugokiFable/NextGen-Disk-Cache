@@ -73,14 +73,19 @@
 // Detours
 #include <detours/detours.h>
 #include "DirectStorageBackend.h"
+#include "IatHook.h"
 
 #define SKSEAPI extern "C" __declspec(dllexport)
 
 #define PLUGIN_NAME    "NextGen Disk Cache"
 // Original author first (Archost). Uploader on Nexus: enpinion.
 #define PLUGIN_AUTHOR  "Archost (mod: enpinion upload; derivative)"
-#define PLUGIN_VERSION ((1u << 16) | (4u << 8) | 1u) // 1.4.1
-#define PLUGIN_VERSION_STRING "1.4.1"
+// 2.0.0 unifies the Nexus file version with the repository version. Earlier
+// Nexus uploads (1.1.2 / 1.1.3) used a separate numbering scheme from the git
+// tags (1.3.0 / 1.4.x), which made user bug reports impossible to map onto a
+// commit. From here the DLL, the tag, and the Nexus file all read the same.
+#define PLUGIN_VERSION ((2u << 16) | (0u << 8) | 0u) // 2.0.0
+#define PLUGIN_VERSION_STRING "2.0.0"
 
 // ---------------------------------------------------------------------------
 // Settings (INI)
@@ -90,6 +95,12 @@ struct Settings {
 	bool enableCreateFileW = true;
 	bool enableCreateFileA = true;
 	bool stripNoBuffering = true;
+	// 0 = rewrite only the main executable's import table (default). Other
+	// modules keep their own IAT, so unrelated SKSE plugins are provably
+	// unaffected. 1 = process-wide Detours trampoline: catches every caller
+	// including other plugins, which is the wider compatibility surface the
+	// narrow mode exists to avoid. Experimental, opt-in.
+	int hookScope = 0;
 	// Default-safe scope: only known Bethesda archive reads are rewritten.
 	// Broad mode may include known loose assets, but unknown extensions are
 	// never modified.
@@ -97,13 +108,20 @@ struct Settings {
 	bool preferRandomAccessOnArchives = true;
 	bool leaveSequentialOnLogs = true;
 
-	// Process-scoped hints: SetProcessInformation(GetCurrentProcess(), ...) only
-	// affects Skyrim itself, so unlike the CreateFile hook these cannot influence
-	// other SKSE plugins. EcoQoS throttling actively hurts a foreground game, so
-	// clearing it is on by default. Working-set expansion stays off: the process
-	// working set is not the Windows system file cache.
-	bool disablePowerThrottling = true;
-	bool raiseMemoryPriority = true;
+	// Process-scoped hints: SetProcessInformation(GetCurrentProcess(), ...)
+	// affects only Skyrim, never other SKSE plugins. Both still ship OFF.
+	//
+	// disablePowerThrottling genuinely opts the process out of EcoQoS
+	// execution-speed throttling, but that is a process-wide scheduling policy
+	// choice with no measured disk-cache benefit, so it belongs in an opt-in
+	// profile rather than a silent default.
+	//
+	// raiseMemoryPriority sets MEMORY_PRIORITY_NORMAL (5), which Microsoft
+	// documents as the default for every process and thread. It is therefore a
+	// no-op unless something else lowered the priority first. 1.4.1 shipped it
+	// on and described it as a performance improvement; that was wrong.
+	bool disablePowerThrottling = false;
+	bool raiseMemoryPriority = false;
 	bool expandWorkingSet = false;
 	// Fraction of physical RAM allowed as max working set (0.10–0.75). 0 = skip.
 	double workingSetMaxFraction = 0.50;
@@ -333,6 +351,8 @@ static void LoadIniFromPath(const char* path)
 			g_settings.enableCreateFileA = ParseBool(val, g_settings.enableCreateFileA);
 		else if (_stricmp(key, "bStripNoBuffering") == 0)
 			g_settings.stripNoBuffering = ParseBool(val, g_settings.stripNoBuffering);
+		else if (_stricmp(key, "iHookScope") == 0)
+			g_settings.hookScope = ParseInt(val, g_settings.hookScope);
 		else if (_stricmp(key, "bConservativeHookScope") == 0)
 			g_settings.conservativeHookScope = ParseBool(val, g_settings.conservativeHookScope);
 		else if (_stricmp(key, "bPreferRandomAccessOnArchives") == 0 ||
@@ -421,6 +441,9 @@ static void SanitizeSettings()
 		std::max(0.10, std::min(g_settings.workingSetMaxFraction, 0.75));
 	g_settings.workingSetMinMB = ClampUnsigned(g_settings.workingSetMinMB, 0, 16384);
 	g_settings.gameDriveClass = std::max(0, std::min(g_settings.gameDriveClass, 3));
+	// Unknown values fall back to the narrow scope, never the wide one.
+	if (g_settings.hookScope != 0 && g_settings.hookScope != 1)
+		g_settings.hookScope = 0;
 
 	// Prevent malformed or negative INI values (atoi -> unsigned wrap) from
 	// turning an optional prefetch into an unbounded delay, allocation, or I/O burst.
@@ -1741,11 +1764,48 @@ static void DetectSiblingPlugins()
 // ---------------------------------------------------------------------------
 static bool g_hooksAttached = false;
 
-static bool AttachHooks()
+// Narrow scope: rewrite only the main executable's import table, so file I/O
+// performed by unrelated SKSE plugins never reaches this plugin's code.
+static bool AttachHooksIat()
 {
-	if (!g_settings.enableFileCacheHooks)
-		return true;
+	char foundA[64] = {};
+	char foundW[64] = {};
+	bool any = false;
 
+	if (g_settings.enableCreateFileA) {
+		void* prev = IatHookInstall(nullptr, "CreateFileA", CreateFileA_hook,
+			foundA, sizeof(foundA));
+		if (prev) {
+			CreateFileA_orig = reinterpret_cast<decltype(CreateFileA_orig)>(prev);
+			any = true;
+		}
+	}
+	if (g_settings.enableCreateFileW) {
+		void* prev = IatHookInstall(nullptr, "CreateFileW", CreateFileW_hook,
+			foundW, sizeof(foundW));
+		if (prev) {
+			CreateFileW_orig = reinterpret_cast<decltype(CreateFileW_orig)>(prev);
+			any = true;
+		}
+	}
+
+	if (!any) {
+		// Never silently pretend to be active: an executable that resolves these
+		// dynamically has no IAT slot to patch, and the plugin does nothing.
+		Log("IAT hook was not installed; plugin left inert. "
+			"The executable does not import CreateFileA/CreateFileW by name.");
+		return false;
+	}
+
+	g_hooksAttached = true;
+	Log("CreateFile hooks attached via IAT of the main executable "
+		"(A=%s W=%s) - other modules are not intercepted",
+		foundA[0] ? foundA : "not hooked", foundW[0] ? foundW : "not hooked");
+	return true;
+}
+
+static bool AttachHooksDetours()
+{
 	DetourRestoreAfterWith();
 	DetourTransactionBegin();
 	DetourUpdateThread(GetCurrentThread());
@@ -1773,10 +1833,29 @@ static bool AttachHooks()
 		return false;
 	}
 	g_hooksAttached = true;
-	Log("CreateFile hooks attached (A=%d W=%d scope=%s random_access=archives_only)",
-		(int)g_settings.enableCreateFileA, (int)g_settings.enableCreateFileW,
-		g_settings.conservativeHookScope ? "archives-only" : "known-assets");
+	Log("CreateFile hooks attached PROCESS-WIDE via Detours (A=%d W=%d) - "
+		"file opens from every module in the process pass through this plugin",
+		(int)g_settings.enableCreateFileA, (int)g_settings.enableCreateFileW);
 	return true;
+}
+
+static bool AttachHooks()
+{
+	if (!g_settings.enableFileCacheHooks)
+		return true;
+
+	Log("Hook scope: %s | file policy: %s | random_access=archives_only",
+		g_settings.hookScope == 1 ? "process-wide (Detours, EXPERIMENTAL)"
+								  : "executable imports only (IAT)",
+		g_settings.conservativeHookScope ? "archives-only" : "known-assets");
+
+	if (g_settings.hookScope == 1)
+		return AttachHooksDetours();
+
+	// Default. If the executable has no importable slot the plugin reports
+	// itself inert rather than escalating to a process-wide trampoline: silently
+	// widening the blast radius is exactly what the narrow mode exists to avoid.
+	return AttachHooksIat();
 }
 
 // Retained for completeness. SKSE never hot-unloads plugins and DllMain's

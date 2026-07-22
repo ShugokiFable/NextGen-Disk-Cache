@@ -1,91 +1,75 @@
-# NextGen Disk Cache 1.4.1
+# NextGen Disk Cache 2.0.0
 
 A conservative SKSE64 derivative of **Disk Cache Enabler** by **Archost** (original Nexus upload by **enpinion**).
 
-## What changed in 1.4.1
+Skyrim opens its `.bsa`/`.ba2` archives with `FILE_FLAG_NO_BUFFERING`, which tells Windows *not* to keep those reads in the system file cache. On a machine with RAM to spare that is usually the wrong trade. This plugin removes that flag from archive reads so Windows can cache them — and, by default, does nothing else.
 
-**The policy self-test is now a real guard.** In 1.4.0 it tested constants it set itself, so the optimizer folded it to `true` and deleted the failure branch — the error string was not even present in the shipped binary, meaning the advertised safety check could never fire. It now validates the invariants against your actually-loaded settings, never mutates the live policy the hooks read, and is verified present in the release binary.
+## Version numbering
 
-**Two process-scoped hints are on again by default:** `bDisablePowerThrottling` and `bRaiseMemoryPriority`. These call `SetProcessInformation` on Skyrim's own process only — unlike the file hook they cannot affect other SKSE plugins, so the 1.4.0 compatibility rationale never applied to them. Windows' EcoQoS throttling actively hurts a foreground game. `bExpandWorkingSet` stays **off**; the process working set is not the Windows file cache.
+**2.0.0 unifies the numbering.** Earlier Nexus uploads (1.1.2, 1.1.3) used a different scheme from the repository tags (1.3.0, 1.4.x), which made bug reports impossible to map to a commit. From here the DLL version, the git tag, and the Nexus file version are always the same number.
 
-**Honest statistics.** The log counter previously reported `write_or_async_left_untouched` while actually counting every unmodified archive/asset open, including ones that were never in scope. It is now `in_scope_safety_gated` and counts only handles the plugin was allowed to touch but refused for safety. The snapshot is also emitted when the warm cache is disabled — previously it was unreachable in the shipped default, so nobody could report it.
+| Old Nexus file | Was actually |
+|---|---|
+| 1.1.2 "Experimental" | repo 1.3.0 (warm cache and hardware tuning on) |
+| 1.1.3 "Safe" | a narrow IAT build whose source was never published |
 
-Warm cache and DirectStorage remain **off by default**. Reported stutter from aggressive default prefetching is a legitimate concern and is not being reintroduced.
+If you compared those two and preferred 1.1.2, you were comparing a fully-featured build against a nearly-inert one. 2.0.0 lets you pick either behaviour from one installer.
 
-## What 1.4.0 actually changes
+## Choose a build (one FOMOD, three options)
 
-The plugin hooks `CreateFileA` and `CreateFileW`, but the default policy now rewrites only a narrow class of requests:
+### Safe — recommended
+Hooks **only** the `CreateFileA`/`CreateFileW` entries in `SkyrimSE.exe`'s own import table. Other SKSE plugins have their own import tables, so their file operations never reach this mod at all — verified by test, not asserted.
 
-- existing `.bsa` and `.ba2` files;
-- read-only access;
-- synchronous handles;
-- no write-through or delete-on-close semantics.
+Rewrites only opens that are **all** of: an existing `.bsa`/`.ba2`, read-only, synchronous, `OPEN_EXISTING`. For those it removes `FILE_FLAG_NO_BUFFERING` and applies the archive-only `FILE_FLAG_RANDOM_ACCESS` hint.
 
-For those archive reads only, it may remove `FILE_FLAG_NO_BUFFERING` and replace `FILE_FLAG_SEQUENTIAL_SCAN` with `FILE_FLAG_RANDOM_ACCESS`.
+### Minimal — troubleshooting
+Safe, minus the random-access hint. Strips `FILE_FLAG_NO_BUFFERING` from archive reads and does nothing else. Use it to isolate a compatibility problem or if you want the smallest possible change.
 
-Everything else is untouched by default, including:
+### Experimental — unproven, benchmark it
+Safe plus three opt-in changes, none of them demonstrated to help:
 
-- `.ess`, `.skse`, `.cosave`, backups, journals, and SQLite state files;
-- logs and temporary files;
-- plugins, meshes, textures, audio, configuration files, and unknown extensions;
-- every write-capable, overlapped, write-through, create, truncate, or delete-on-close request.
+- **Process-wide hook** (Detours) instead of the executable's import table. File opens from *other* SKSE plugins pass through this mod's policy. The policy declines nearly all of them, but this is a real compatibility surface — it is the reason Safe exists.
+- **Bounded warm cache**: 512 MB total, 8 MB per archive, one low-priority thread, starting 60 s after load. It cannot know which archives your save will need, and background disk activity is a plausible microstutter cause.
+- **EcoQoS power throttling disabled** for the Skyrim process.
 
-The plugin does not parse or edit save data.
+If you cannot measure a difference against Safe on your own save and route, use Safe.
 
-## Why 1.4.0 exists
+## Never touched, in any profile
 
-Earlier releases had two defensible criticism points:
+Saves (`.ess`), SKSE cosaves, backups, journals and SQLite state files, logs, temp files, plugins, loose meshes/textures/audio, config files, and unknown extensions. Nor any handle opened for write or delete, or with `OVERLAPPED`, `WRITE_THROUGH`, `DELETE_ON_CLOSE`, or a create/truncate disposition. The plugin does not parse or write save data.
 
-1. read-only files with unknown extensions could still lose `FILE_FLAG_NO_BUFFERING`;
-2. `FILE_FLAG_RANDOM_ACCESS` was forced on many file types where access may be sequential;
-3. the default warm-cache profile could start a multi-threaded, multi-gigabyte read shortly after launch.
+A policy self-test runs before the hooks are installed and disables them if any of those invariants fail. It is verified to survive optimization — an earlier release shipped a self-test the compiler had folded into an unconditional success.
 
-Version 1.4.0 closes those gaps. Unknown files are never modified, random-access hints are archive-only, and warm cache plus DirectStorage probing ship disabled.
+## What it will not do
 
-## Profiles
+It cannot enable 3D V-Cache, Resizable BAR, XMP/EXPO, or an SSD's onboard DRAM cache — those are silicon, BIOS, or firmware. `bRaiseMemoryPriority` is present for completeness but ships **off**: it sets `MEMORY_PRIORITY_NORMAL`, which Microsoft documents as already the default, so it is a no-op.
 
-- **Safe Default**: archive-only hook, process/hardware logging enabled, warm cache off.
-- **Minimal Compatibility**: archive-only hook and logging, all optional tuning off.
-- **Experimental Bounded Warm Cache**: 512 MB maximum, 8 MB per archive, one low-priority thread, 60-second delay. Benchmark before keeping it.
+DirectStorage is bundled only as an optional FOMOD choice and is disabled in every shipped profile. Its raw-read path fills scratch memory and discards it, which does not populate the Windows cache Skyrim reads from.
 
-## Optional broad mode
+## Verifying this build yourself
 
-`bConservativeHookScope=0` allows removal of `FILE_FLAG_NO_BUFFERING` from known loose-asset reads. Unknown extensions remain untouched, and `FILE_FLAG_RANDOM_ACCESS` remains limited to BSA/BA2 archives. Broad mode is not recommended as a modlist default.
+Every release is built by GitHub Actions from the tagged commit, and the workflow, hashes, and PDB are published with it. To check a DLL you already have:
 
-## Safety guards
+```
+dumpbin /exports NextGenDiskCache.dll   →  only SKSEPlugin_Load/Query/Version
+dumpbin /imports NextGenDiskCache.dll   →  SETUPAPI, KERNEL32, SHELL32 only
+```
 
-- internal policy self-test runs before hooks attach;
-- malformed INI numbers are clamped to finite ranges;
-- warm-cache auto-tune may reduce pressure but never silently expands the configured budget;
-- warm cache scans BSA/BA2 archives only;
-- legacy `DiskCacheEnabler.dll` should not be installed at the same time.
+MSVC output is not bit-identical across compiler versions, so a local build with a different Visual Studio release yields a different hash but identical imports, exports and behaviour.
 
-## Requirements
-
-- Skyrim SE/AE launched through matching SKSE64
-- No Address Library requirement
-
-Supported runtime declarations remain 1.5.97, 1.6.640, and 1.6.659 GOG. Other runtimes require testing even though this plugin uses no game structures.
+The log at `Documents\My Games\Skyrim Special Edition\SKSE\NextGenDiskCache.log` states the active hook scope on every launch. Set `bLogEveryOpen=1` briefly to see exactly which handles are and are not modified.
 
 ## Build
 
-From a Visual Studio x64 developer environment:
-
 ```powershell
-.\build.ps1
-```
-
-Nexus-ready packaging:
-
-```powershell
-.\package-release.ps1
+.\build.ps1          # fetches the DirectStorage SDK, builds Release x64
+.\package-release.ps1 # produces the Nexus/Vortex FOMOD zip + SHA-256
 ```
 
 ## Credits and license
 
-- Archost: original Disk Cache Enabler, ISC license
-- enpinion: original Nexus upload
-- Microsoft Detours: MIT license
-- SKSE team: plugin API headers
+- **Archost** — original Disk Cache Enabler (ISC)
+- **enpinion** — original Nexus upload
+- Microsoft Detours (MIT), SKSE64 plugin headers
 
-See the included license files. This derivative retains Archost's copyright and ISC notice.
+This derivative retains Archost's copyright and ISC notice.

@@ -8,7 +8,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-VERSION = "1.4.1"
+VERSION = "2.0.0"
 PROFILES = ["SafeDefault", "Minimal", "ExperimentalWarmCache"]
 
 
@@ -29,6 +29,8 @@ def main() -> int:
         "src/main.cpp",
         "src/DirectStorageBackend.h",
         "src/DirectStorageBackend.cpp",
+        "src/IatHook.h",
+        "src/IatHook.cpp",
         "CMakeLists.txt",
         "build.ps1",
         "package-release.ps1",
@@ -79,8 +81,14 @@ def main() -> int:
             require(cfg.has_section(section), f"{profile}: missing [{section}]")
         require(cfg.get("FileCache", "bConservativeHookScope") == "1",
                 f"{profile}: conservative scope must ship enabled")
-        require(cfg.get("FileCache", "bPreferRandomAccessOnArchives") == "1",
-                f"{profile}: archive-only random hint missing")
+        # Minimal deliberately ships the unbenchmarked random-access hint off;
+        # every other profile must keep it archive-only rather than removing it.
+        require(cfg.get("FileCache", "bPreferRandomAccessOnArchives") in {"0", "1"},
+                f"{profile}: random-access hint must be explicitly set")
+        # Only the Experimental profile may widen the hook past the executable.
+        expected_scope = "1" if profile == "ExperimentalWarmCache" else "0"
+        require(cfg.get("FileCache", "iHookScope") == expected_scope,
+                f"{profile}: iHookScope must be {expected_scope}")
         require(cfg.get("Process", "bExpandWorkingSet") == "0",
                 f"{profile}: working-set expansion must ship off")
         require(cfg.get("DirectStorage", "bDirectStorageProbe") == "0",
@@ -149,9 +157,25 @@ def main() -> int:
                   "Cancellation is asynchronous", "LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR"]:
         require(token in ds_cpp, f"DirectStorage backend missing {token}")
 
+    # The narrow IAT hook is the default scope; a process-wide trampoline must
+    # stay opt-in and must never be the fallback when the IAT hook fails.
+    iat_cpp = (ROOT / "src/IatHook.cpp").read_text(encoding="utf-8")
+    for token in ["IMAGE_DIRECTORY_ENTRY_IMPORT", "IMAGE_ORDINAL_FLAG",
+                  "VirtualProtect", "OriginalFirstThunk"]:
+        require(token in iat_cpp, f"IAT hook missing {token}")
+    for token in ["AttachHooksIat", "AttachHooksDetours",
+                  "IatHookInstall(nullptr, \"CreateFileW\"",
+                  "IAT hook was not installed",
+                  "g_settings.hookScope == 1"]:
+        require(token in main_cpp, f"main.cpp missing hook-scope token: {token}")
+    require(main_cpp.index("return AttachHooksIat();") >
+            main_cpp.index("if (g_settings.hookScope == 1)"),
+            "IAT must be the default path, Detours the explicit opt-in")
+
     cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
     require(f"VERSION {VERSION}" in cmake, "CMake version mismatch")
     require("DirectStorageBackend.cpp" in cmake, "DirectStorage backend not built")
+    require("IatHook.cpp" in cmake, "IAT hook not built")
 
     packager = (ROOT / "package-release.ps1").read_text(encoding="utf-8")
     for token in ["Profiles\\SafeDefault", "Profiles\\Minimal",
