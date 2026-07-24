@@ -1,8 +1,10 @@
 NextGen Disk Cache 2.0.0 - Public Package Notice
 ================================================
 
-This package does not include the Microsoft DirectStorage runtime.
-DirectStorage probing and warm reads are disabled in every supplied profile.
+This package does not include the Microsoft DirectStorage runtime DLLs.
+The plugin contains an optional DirectStorage backend compiled against SDK
+headers, but probing and warm reads are disabled in every supplied profile.
+The Microsoft DirectStorage SDK code-license notice is included accordingly.
 
 The Safe profile is recommended. Performance improvements are not guaranteed;
 no public comparative in-game benchmark or complete runtime compatibility matrix

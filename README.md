@@ -111,13 +111,11 @@ Automatic tuning can only reduce the configured warmer limits. It does not scale
 
 ## DirectStorage status
 
-The Microsoft DirectStorage runtime is **not included** in the public release package (Nexus or the GitHub FOMOD zip).
+The Microsoft DirectStorage runtime DLLs are **not included** in the public release package (Nexus or the GitHub FOMOD zip).
 
-DirectStorage probing and DirectStorage warm reads remain disabled in every supplied profile.
+The plugin DLL still contains an optional, dynamically resolved DirectStorage backend compiled against Microsoft SDK headers. DirectStorage probing and DirectStorage warm reads remain disabled in every supplied profile, so the backend is inactive with the shipped configurations.
 
-This release makes no DirectStorage performance claim.
-
-(The source tree may still compile optional DirectStorage backend code for development; it is not shipped and is not enabled by any profile.)
+This release makes no DirectStorage performance claim. The archive includes the Microsoft DirectStorage SDK code-license notice because the SDK headers are used to build the plugin.
 
 ---
 
@@ -133,7 +131,7 @@ This mod changes file-open caching policy. It does not guarantee:
 
 Results may vary depending on storage hardware, available system memory, Windows file-cache state, archive layout, mod-list composition, and the save and route being tested.
 
-Version 2.0.0 has source-level validation and standalone hook-policy testing.
+Version 2.0.0 includes a runtime file-policy self-test and public source/package validation. These checks verify policy invariants and package structure; they are not an in-game performance benchmark.
 
 At the time of publication:
 
@@ -145,10 +143,12 @@ Any performance improvement should be treated as a possibility to test, not a pr
 
 ---
 
-## Requirements
+## Requirements and runtime status
 
-- Skyrim Special Edition or Anniversary Edition on 64-bit Windows
-- SKSE64
+- 64-bit Windows
+- Skyrim Special Edition or Anniversary Edition with SKSE64
+
+The DLL metadata explicitly lists Skyrim runtimes **1.5.97**, **1.6.640**, and **GOG 1.6.659**. Other runtime versions are not claimed as tested in this release, and no complete runtime compatibility matrix has been published.
 
 Do not install together with the original Disk Cache Enabler DLL, another version of NextGen Disk Cache, or any duplicate `NextGenDiskCache.dll`.
 
@@ -168,7 +168,13 @@ The installer places `NextGenDiskCache.dll` and the selected `NextGenDiskCache.i
 
 ## Log file
 
+Default/Steam path:
+
 `Documents\My Games\Skyrim Special Edition\SKSE\NextGenDiskCache.log`
+
+GOG fallback path:
+
+`Documents\My Games\Skyrim Special Edition GOG\SKSE\NextGenDiskCache.log`
 
 The log reports the selected hook scope and whether the hook was installed.
 
@@ -220,7 +226,7 @@ AI tools assisted portions of development, auditing and documentation. AI assist
 
 ## Verifying a build
 
-Every public release is built by GitHub Actions from the tagged commit when published. The PDB is **not** inside the FOMOD zip; symbols are published separately as CI artifacts when available.
+The plugin DLL distributed in the 2.0.0 compliance package is the unchanged GitHub Actions build produced from tag `v2.0.0`. Later compliance revisions update only the surrounding FOMOD documentation, licensing, and package metadata; their ZIP hashes are published separately. The PDB is **not** inside the FOMOD zip.
 
 ```
 dumpbin /exports NextGenDiskCache.dll   →  only SKSEPlugin_Load/Query/Version
@@ -244,7 +250,7 @@ MSVC output is not bit-identical across compiler versions; local builds may diff
 
 - **Archost** — original Disk Cache Enabler and ISC-licensed source
 - **enpinion** — original Nexus upload
-- **Microsoft** — Detours
+- **Microsoft** — Detours and DirectStorage SDK headers
 - **SKSE Team** — SKSE64 plugin interface and notices
 
-This project is a modified derivative of Disk Cache Enabler. The original Archost copyright and ISC permission notice are included in the archive, along with the project license, Microsoft Detours license and SKSE64 notice.
+This project is a modified derivative of Disk Cache Enabler. The archive includes the original Archost copyright and ISC permission notice, the project license, Microsoft Detours license, Microsoft DirectStorage SDK code-license notice, and the SKSE64 notice. The DirectStorage runtime DLLs are not included.

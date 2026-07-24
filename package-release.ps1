@@ -40,6 +40,7 @@ $rootDocs = @(
     "LICENSE.txt",
     "LICENSE.Archost-DiskCacheEnabler.txt",
     "LICENSE.detours.txt",
+    "LICENSE.DirectStorage-Code.txt",
     "LICENSE.SKSE64.txt"
 )
 foreach ($doc in $rootDocs) {
@@ -48,7 +49,8 @@ foreach ($doc in $rootDocs) {
 }
 
 # DirectStorage runtime is intentionally not shipped in the public package.
-# Backend code may still compile for development; all shipped profiles leave it off.
+# The plugin is compiled against DirectStorage SDK headers, so the SDK code-license
+# notice is included even though runtime DLLs are omitted and all profiles leave it off.
 
 # FOMOD and payload gates.
 [xml]$moduleConfig = Get-Content (Join-Path $stage "fomod\ModuleConfig.xml") -Raw

@@ -1,4 +1,4 @@
-﻿NextGen Disk Cache - Public Release History
+NextGen Disk Cache - Public Release History
 ===========================================
 
 2.0.0
@@ -11,10 +11,11 @@
 - Added a Minimal profile without the random-access hint.
 - Kept the process-wide hook and speculative warmer inside the clearly labelled Experimental profile.
 - Warm cache, hardware profiling and automatic tuning remain disabled in Safe and Minimal.
-- Removed the DirectStorage runtime from the public package (Nexus and GitHub FOMOD).
+- Removed the DirectStorage runtime DLLs from the public package while retaining the disabled optional backend.
 - Added runtime policy validation and corrected diagnostic counters.
+- Added the Microsoft DirectStorage SDK code-license notice because SDK headers are used to build the plugin.
 - Restored all required license and attribution files.
-- Rewrote performance and compatibility statements to reflect the current testing status.
+- Rewrote performance, runtime compatibility, log-path, and build-provenance statements to reflect the current evidence.
 
 Legacy version mapping
 ----------------------

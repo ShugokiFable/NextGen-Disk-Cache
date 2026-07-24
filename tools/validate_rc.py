@@ -43,6 +43,7 @@ def main() -> int:
         "LICENSE.txt",
         "LICENSE.Archost-DiskCacheEnabler.txt",
         "LICENSE.detours.txt",
+        "LICENSE.DirectStorage-Code.txt",
         "LICENSE.SKSE64.txt",
     ] + [f"profiles/{p}/NextGenDiskCache.ini" for p in PROFILES]
     for rel in required:
