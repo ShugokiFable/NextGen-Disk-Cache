@@ -1,3 +1,29 @@
+﻿NextGen Disk Cache - Public Release History
+===========================================
+
+2.0.0
+-----
+- Unified Nexus, DLL and GitHub version numbering.
+- Added Safe, Minimal and Experimental installer profiles.
+- Made the narrow SkyrimSE.exe import-table hook the recommended default.
+- Restricted modifications to eligible read-only synchronous BSA/BA2 archive opens.
+- Saves, cosaves, plugins, loose assets, configuration files and unknown extensions remain untouched.
+- Added a Minimal profile without the random-access hint.
+- Kept the process-wide hook and speculative warmer inside the clearly labelled Experimental profile.
+- Warm cache, hardware profiling and automatic tuning remain disabled in Safe and Minimal.
+- Removed the DirectStorage runtime from the public package (Nexus and GitHub FOMOD).
+- Added runtime policy validation and corrected diagnostic counters.
+- Restored all required license and attribution files.
+- Rewrote performance and compatibility statements to reflect the current testing status.
+
+Legacy version mapping
+----------------------
+- Nexus 1.1.2 was an unsupported experimental build corresponding approximately to repository version 1.3.0.
+- Nexus 1.1.3 was an unsupported narrow safety build whose exact source was not published.
+
+================================================================================
+DEVELOPER CHANGELOG (detailed historical notes)
+================================================================================
 NextGen Disk Cache 2.0.0 - narrow IAT hook, one FOMOD, unified versioning
 ============================================
 Responds to an independent audit of 1.4.1 (2026-07-22). Accepted findings:
@@ -251,13 +277,13 @@ Validation (2026-07-18, target rig: 9800X3D / 32 GB DDR5-6000 / RTX 4080 SUPER):
     PDB/LIB/OBJ/EXP in the public payload; symbols stage to build/symbols.
 ================================================================================
 
-# CHANGELOG — NextGen Disk Cache
+# CHANGELOG â€” NextGen Disk Cache
 # One living file. Do not delete old entries.
 
 ================================================================================
-## [1.1.0] — 2026-07-16
+## [1.1.0] â€” 2026-07-16
 Agent: Claude
-Intent: Modern-hardware feature update — detect + adapt to X3D CPUs, Resizable
+Intent: Modern-hardware feature update â€” detect + adapt to X3D CPUs, Resizable
         BAR, DDR5, NVMe/SSD storage; smarter warm cache; DllMain safety fix.
 Files changed:
   - source/src/main.cpp (version 1.1.0; all features below)
@@ -265,7 +291,7 @@ Files changed:
   - source/package/SKSE/Plugins/NextGenDiskCache.ini ([Hardware] section;
     iWarmCacheBudgetMB / iWarmCacheThreads / bWarmCacheMappedPrefetch /
     bWarmCacheLowIoPriority)
-  - source/README.md ("1.1.0 — modern hardware support" table)
+  - source/README.md ("1.1.0 â€” modern hardware support" table)
   - NextGen Disk Cache 1.1.0/SKSE/Plugins/NextGenDiskCache.dll (348160 bytes)
   - NextGen Disk Cache 1.1.0/SKSE/Plugins/NextGenDiskCache.ini + .pdb + README.md
 New features:
@@ -273,9 +299,9 @@ New features:
     X3D (3D V-Cache) + dual-CCD + Intel hybrid P/E detection; RAM DDR
     generation + configured MT/s via SMBIOS Type 17; game-drive class
     NVMe/SATA SSD/HDD via seek-penalty + bus-type IOCTL; GPU largest PCI BAR
-    via SetupAPI/cfgmgr32 (ResType_Mem + ResType_MemLarge) → Resizable BAR
+    via SetupAPI/cfgmgr32 (ResType_Mem + ResType_MemLarge) â†’ Resizable BAR
     ACTIVE/OFF verdict; real OS build via RtlGetVersion.
-  - bAutoTune: warm-cache budget by RAM tier (8G/4G/1.5G/512M, ¼-of-free cap,
+  - bAutoTune: warm-cache budget by RAM tier (8G/4G/1.5G/512M, Â¼-of-free cap,
     256 MB HDD cap), parallel readers by drive (NVMe 4 / SATA 2 / HDD 1),
     per-file cap by drive (64/32/8 MB).
   - Warm cache rework: multi-threaded work-stealing over size-sorted archive
@@ -283,7 +309,7 @@ New features:
     IoPriorityHintLow on warm handles; EcoQoS allowed on warm threads.
   - bPreferFastCores (default OFF): SetProcessDefaultCpuSets soft hint to
     V-Cache CCD (dual-CCD X3D) or P-cores (Intel hybrid).
-  - Fixes: MessageBoxA removed from DllMain (loader-lock deadlock risk —
+  - Fixes: MessageBoxA removed from DllMain (loader-lock deadlock risk â€”
     now logged instead); ClassifyPathW no longer truncates long paths (wide
     extension extraction); warm budget RAM tiers carry slack for reserved
     memory (31.8 GiB "32 GB" kits); log strings pure ASCII (no mojibake);
@@ -293,23 +319,23 @@ Why / root cause:
     BIOS-level tech cannot be enabled from software, but it CAN be detected,
     reported, and used to auto-tune the software-side cache behavior.
 Verify:
-  - build.ps1 (MSVC 19.51, VS 18 2026, Release x64) → BUILD OK, 0 errors;
+  - build.ps1 (MSVC 19.51, VS 18 2026, Release x64) â†’ BUILD OK, 0 errors;
     only pre-existing vendored warnings (IPrefix.h C4005, detours LNK4099)
   - dumpbin /exports: SKSEPlugin_Version + SKSEPlugin_Query + SKSEPlugin_Load
   - Runtime harness (LoadLibrary + SKSEPlugin_Load + fake Data\ archives) on
     the real rig: detected 9800X3D 96MB L3 [3D V-Cache], DDR5-6000 2 modules,
-    NVMe SSD, RTX 4080 SUPER BAR 16384 MB → ReBAR ACTIVE, Win11 26200;
+    NVMe SSD, RTX 4080 SUPER BAR 16384 MB â†’ ReBAR ACTIVE, Win11 26200;
     auto-tune plan budget 3604 MB / 3 threads / mapped prefetch; warmed
     32 MB across 3 files; clean exit stats. Hooks attach/detach clean.
   - UNPROVEN: in-game run under real SKSE (user will test).
-  - Zip: NextGenDiskCache-1.1.0.zip (SHA256 D25FCFB8…66C6A9BA)
+  - Zip: NextGenDiskCache-1.1.0.zip (SHA256 D25FCFB8â€¦66C6A9BA)
 Nexus: NO
 Notes:
   - branched from NextGen Disk Cache 1.0.1
   - SHIP GATE: N/A (DLL-only, no ESP)
   - source/.git not committed (user did not request a commit)
 ================================================================================
-## [1.0.1] — 2026-07-16
+## [1.0.1] â€” 2026-07-16
 Agent: Grok
 Intent: ISC license compliance + correct credits for Disk Cache Enabler derivative
 Files changed:
@@ -329,7 +355,7 @@ Nexus: NO
 Notes:
   - 1.0.0 folder left intact
 ================================================================================
-## [1.0.0] — 2026-07-16
+## [1.0.0] â€” 2026-07-16
 Agent: Grok
 Intent: Ship enhanced Disk Cache Enabler successor for modern SSD/RAM PCs;
         do NOT touch Fast*/Faster* author binaries.
@@ -344,10 +370,10 @@ Why / root cause:
   - Original DiskCacheEnabler only hooked CreateFileA, stripped NO_BUFFERING,
     forced RANDOM_ACCESS; no CreateFileW, no process hints, no warm-cache,
     printf spam if console enabled.
-  - User wanted hardware-aware gains; ReBAR/XMP/x3D are BIOS-level — documented
+  - User wanted hardware-aware gains; ReBAR/XMP/x3D are BIOS-level â€” documented
     honestly; software does OS file-cache + EcoQoS + warm read.
 Verify:
-  - cmake + MSVC 19.51 Release → NextGenDiskCache.dll (331776 bytes) BUILD OK
+  - cmake + MSVC 19.51 Release â†’ NextGenDiskCache.dll (331776 bytes) BUILD OK
   - dumpbin /exports: SKSEPlugin_Version, SKSEPlugin_Query, SKSEPlugin_Load
   - SHIP GATE: N/A (DLL-only, no ESP)
   - Zip: NextGenDiskCache-1.0.0.zip
@@ -357,3 +383,4 @@ Notes:
     left untouched (author said no).
   - Remove legacy diskCacheEnabler.dll when installing this.
 ================================================================================
+

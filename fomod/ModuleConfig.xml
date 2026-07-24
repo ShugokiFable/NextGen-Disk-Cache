@@ -11,46 +11,42 @@
         <group name="Safe or Experimental" type="SelectExactlyOne">
           <plugins order="Explicit">
             <plugin name="Safe (Recommended)">
-              <description>The narrow build. Hooks ONLY the CreateFileA/CreateFileW entries in SkyrimSE.exe's own import table, so file operations made by other SKSE plugins never reach this mod. Rewrites only existing, synchronous, read-only .bsa/.ba2 opens: removes FILE_FLAG_NO_BUFFERING so Windows can cache archive reads, and applies the archive-only random-access hint.
+              <description>The normal-play profile. Hooks only the relevant imports belonging to SkyrimSE.exe. Considers only eligible read-only synchronous .bsa/.ba2 opens: removes FILE_FLAG_NO_BUFFERING and applies FILE_FLAG_RANDOM_ACCESS to those archives.
 
-Saves, cosaves, journals, databases, logs, temp files, plugins, loose meshes/textures/audio and unknown extensions are never touched, and neither is any write, create, truncate, overlapped, write-through or delete-on-close handle.
+Saves, cosaves, journals, databases, logs, temp files, plugins, loose meshes/textures/audio, config files and unknown extensions are never touched. Write, create, truncate, overlapped, write-through and delete-on-close handles are never modified.
 
-No warm cache, no DirectStorage, no hardware probing, no process-wide tweaks. Use this for normal play and long-term saves.</description>
-              <files><folder source="Profiles\SafeDefault" destination="SKSE\Plugins" priority="10" /></files>
-              <typeDescriptor><type name="Recommended" /></typeDescriptor>
+Warm cache, hardware profiling, automatic tuning, process-wide interception, working-set expansion and power-throttling changes are all disabled. Use this for normal play.</description>
+              <files>
+                <folder source="Profiles\SafeDefault" destination="SKSE\Plugins" priority="10" />
+              </files>
+              <typeDescriptor>
+                <type name="Recommended" />
+              </typeDescriptor>
             </plugin>
             <plugin name="Minimal (troubleshooting)">
-              <description>Safe, minus the random-access hint. Strips FILE_FLAG_NO_BUFFERING from archive reads and does nothing else at all. Use this when isolating a compatibility problem, or if you want the smallest possible behavioural change.</description>
-              <files><folder source="Profiles\Minimal" destination="SKSE\Plugins" priority="10" /></files>
-              <typeDescriptor><type name="Optional" /></typeDescriptor>
+              <description>Same narrow executable-only hook and safety gates as Safe. Only removes FILE_FLAG_NO_BUFFERING from eligible archive reads. Does not add the random-access hint and does not enable experimental process, hardware or warm-cache features. Use when you want the smallest behavioural change or are investigating a compatibility concern.</description>
+              <files>
+                <folder source="Profiles\Minimal" destination="SKSE\Plugins" priority="10" />
+              </files>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
             </plugin>
             <plugin name="Experimental (unproven - benchmark it)">
-              <description>Everything in Safe, plus three opt-in changes that are NOT proven to help:
+              <description>Includes the archive policy used by Safe, plus features that have NOT been demonstrated to improve Skyrim performance:
 
-- PROCESS-WIDE hook (Detours) instead of the executable's import table. File opens from other SKSE plugins pass through this mod's policy. The policy declines almost all of them, but this is a genuine compatibility surface.
-- Bounded warm cache: 512 MB total, 8 MB per archive, one low-priority thread, starting 60 seconds after load. It cannot know which archives your save needs, and background disk activity is a plausible microstutter cause.
-- Disables EcoQoS power throttling for the Skyrim process.
+- Process-wide Detours interception instead of the narrow SkyrimSE.exe import hook
+- Bounded speculative warm cache: 512 MB total, 8 MB per archive, 128 archives max, one low-priority worker, 60-second delay
+- Hardware profiling and automatic warmer reduction (auto-tune may only reduce configured limits)
+- EcoQoS execution-speed throttling disabled for the Skyrim process
 
-Benchmark this against Safe on your own system and save. If you cannot measure a difference, use Safe.</description>
-              <files><folder source="Profiles\ExperimentalWarmCache" destination="SKSE\Plugins" priority="10" /></files>
-              <typeDescriptor><type name="Optional" /></typeDescriptor>
-            </plugin>
-          </plugins>
-        </group>
-      </optionalFileGroups>
-    </installStep>
-    <installStep name="DirectStorage runtime">
-      <optionalFileGroups order="Explicit">
-        <group name="Bundle Microsoft DirectStorage 1.3" type="SelectExactlyOne">
-          <plugins order="Explicit">
-            <plugin name="Do not bundle runtime (Recommended)">
-              <description>DirectStorage is not used by any shipped profile. Its raw-read path fills scratch memory and discards it, which does not populate the Windows cache Skyrim actually reads from. Leave this alone unless you are developing against it.</description>
-              <typeDescriptor><type name="Recommended" /></typeDescriptor>
-            </plugin>
-            <plugin name="Install DirectStorage 1.3 runtime (advanced)">
-              <description>Adds roughly 1.7 MB of Microsoft redistributable DLLs beside the plugin. They stay dormant unless you manually set both bDirectStorageProbe and bDirectStorageWarmRead. No shipped profile enables them.</description>
-              <files><folder source="Optional\DirectStorage" destination="SKSE\Plugins" priority="20" /></files>
-              <typeDescriptor><type name="Optional" /></typeDescriptor>
+DirectStorage remains disabled. Benchmark against Safe on the same save and route. If you cannot measure a repeatable improvement, use Safe.</description>
+              <files>
+                <folder source="Profiles\ExperimentalWarmCache" destination="SKSE\Plugins" priority="10" />
+              </files>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
             </plugin>
           </plugins>
         </group>

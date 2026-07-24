@@ -39,6 +39,7 @@ def main() -> int:
         "fomod/ModuleConfig.xml",
         "README.md",
         "CHANGELOG.txt",
+        "PACKAGE-NOTICE.txt",
         "LICENSE.txt",
         "LICENSE.Archost-DiskCacheEnabler.txt",
         "LICENSE.detours.txt",
@@ -70,9 +71,15 @@ def main() -> int:
     require(module.findtext("moduleName") == f"NextGen Disk Cache {VERSION}",
             "wrong FOMOD module version")
     groups = module.findall(".//group")
-    require(len(groups) == 2, "FOMOD should contain profile and DirectStorage groups")
+    require(len(groups) == 1, "FOMOD should contain only the profile group (no DirectStorage step)")
     require(all(g.attrib.get("type") == "SelectExactlyOne" for g in groups),
             "FOMOD choices must be exclusive")
+    module_text = (ROOT / "fomod/ModuleConfig.xml").read_text(encoding="utf-8")
+    require("Optional\\DirectStorage" not in module_text and
+            "Optional/DirectStorage" not in module_text,
+            "FOMOD must not install Optional DirectStorage runtime")
+    require("Bundle Microsoft DirectStorage" not in module_text,
+            "FOMOD must not offer a DirectStorage install step")
 
     sections = ["FileCache", "Process", "Hardware", "WarmCache", "DirectStorage", "Log"]
     for profile in PROFILES:
@@ -180,8 +187,18 @@ def main() -> int:
     packager = (ROOT / "package-release.ps1").read_text(encoding="utf-8")
     for token in ["Profiles\\SafeDefault", "Profiles\\Minimal",
                   "Profiles\\ExperimentalWarmCache", "Forbidden build artifacts",
-                  "Get-FileHash"]:
+                  "Get-FileHash", "PACKAGE-NOTICE.txt",
+                  "Public package must not contain DirectStorage"]:
         require(token in packager, f"release packager missing {token}")
+    require("Optional\\DirectStorage" not in packager or
+            "intentionally not shipped" in packager,
+            "packager must not stage Optional DirectStorage runtime")
+    # Explicitly reject the old stage path that copied dstorage*.dll into the zip.
+    require("Copy-Item $dsLicense" not in packager,
+            "packager must not copy LICENSE.DirectStorage.txt into public zip")
+    require("dstorage*.dll" not in packager or
+            "must not contain DirectStorage DLLs" in packager,
+            "packager must not ship dstorage runtime DLLs")
 
     workflow = (ROOT / ".github/workflows/build-release.yml").read_text(encoding="utf-8")
     for token in ["windows-2022", "NuGet/setup-nuget@v2",

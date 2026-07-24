@@ -4,5 +4,5 @@
   <Author>Archost; derivative maintained by ShugokiFable</Author>
   <Version>2.0.0</Version>
   <Website>https://github.com/ShugokiFable/NextGen-Disk-Cache</Website>
-  <Description>Conservative archive-only Windows file-cache policy for Skyrim SE/AE, with opt-in bounded prefetch experiments.</Description>
+  <Description>A conservative SKSE64 file-cache plugin that modifies only eligible read-only BSA/BA2 archive opens. Includes Safe, Minimal and clearly labelled Experimental profiles. Saves, plugins and loose assets are never modified. Performance gains are not guaranteed.</Description>
 </fomod>

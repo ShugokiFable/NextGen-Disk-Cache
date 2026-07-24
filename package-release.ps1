@@ -26,7 +26,6 @@ New-Item (Join-Path $stage "Core\SKSE\Plugins") -ItemType Directory -Force | Out
 New-Item (Join-Path $stage "Profiles\SafeDefault") -ItemType Directory -Force | Out-Null
 New-Item (Join-Path $stage "Profiles\Minimal") -ItemType Directory -Force | Out-Null
 New-Item (Join-Path $stage "Profiles\ExperimentalWarmCache") -ItemType Directory -Force | Out-Null
-New-Item (Join-Path $stage "Optional\DirectStorage") -ItemType Directory -Force | Out-Null
 
 Copy-Item $dll (Join-Path $stage "Core\SKSE\Plugins\")
 Copy-Item "profiles\SafeDefault\NextGenDiskCache.ini" (Join-Path $stage "Profiles\SafeDefault\")
@@ -37,6 +36,7 @@ Copy-Item "fomod" (Join-Path $stage "fomod") -Recurse
 $rootDocs = @(
     "README.md",
     "CHANGELOG.txt",
+    "PACKAGE-NOTICE.txt",
     "LICENSE.txt",
     "LICENSE.Archost-DiskCacheEnabler.txt",
     "LICENSE.detours.txt",
@@ -47,24 +47,34 @@ foreach ($doc in $rootDocs) {
     Copy-Item $doc $stage
 }
 
-$dsBin = Join-Path $root "deps\directstorage\native\bin\x64"
-$dsLicense = Join-Path $root "deps\directstorage\LICENSE.txt"
-if (Test-Path $dsBin) {
-    $runtimeDlls = Get-ChildItem $dsBin -Filter "dstorage*.dll" -File
-    if ($runtimeDlls.Count -lt 2) {
-        throw "DirectStorage package is incomplete; expected dstorage.dll and dstoragecore.dll"
-    }
-    $runtimeDlls | Copy-Item -Destination (Join-Path $stage "Optional\DirectStorage\")
-    if (-not (Test-Path $dsLicense)) { throw "DirectStorage redistributable license missing" }
-    Copy-Item $dsLicense (Join-Path $stage "LICENSE.DirectStorage.txt")
-} else {
-    throw "DirectStorage SDK/runtime not installed at $dsBin"
-}
+# DirectStorage runtime is intentionally not shipped in the public package.
+# Backend code may still compile for development; all shipped profiles leave it off.
 
 # FOMOD and payload gates.
 [xml]$moduleConfig = Get-Content (Join-Path $stage "fomod\ModuleConfig.xml") -Raw
 if ($moduleConfig.config.moduleName -ne "NextGen Disk Cache $Version") {
     throw "FOMOD module version mismatch"
+}
+if ($moduleConfig.config.installSteps.installStep.Count -ne 1 -and
+    @($moduleConfig.config.installSteps.installStep).Count -ne 1) {
+    # Single "Choose a build" step only (no DirectStorage step).
+    $stepCount = @($moduleConfig.config.installSteps.installStep).Count
+    if ($stepCount -ne 1) {
+        throw "FOMOD must contain exactly one install step (profiles only); found $stepCount"
+    }
+}
+
+$dsFolders = Get-ChildItem $stage -Recurse -Directory -Filter "DirectStorage" -ErrorAction SilentlyContinue
+if ($dsFolders) {
+    throw "Public package must not contain DirectStorage runtime folders: $($dsFolders.FullName -join ', ')"
+}
+$dsDlls = Get-ChildItem $stage -Recurse -File -Filter "dstorage*.dll" -ErrorAction SilentlyContinue
+if ($dsDlls) {
+    throw "Public package must not contain DirectStorage DLLs: $($dsDlls.FullName -join ', ')"
+}
+$dsLicense = Join-Path $stage "LICENSE.DirectStorage.txt"
+if (Test-Path $dsLicense) {
+    throw "Public package must not contain LICENSE.DirectStorage.txt when runtime is omitted"
 }
 
 $forbidden = Get-ChildItem $stage -Recurse -File | Where-Object {
@@ -86,3 +96,4 @@ $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
 Write-Host "RELEASE PACKAGE OK"
 Write-Host "ZIP: $zip"
 Write-Host "SHA256: $hash"
+Write-Host "NOTE: DirectStorage runtime intentionally omitted from public package"
