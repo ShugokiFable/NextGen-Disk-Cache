@@ -1,4 +1,4 @@
-# NextGen Disk Cache 2.0.0
+# NextGen Disk Cache 2.1.0
 
 A conservative, configurable SKSE64 derivative of **Disk Cache Enabler** by **Archost** (original Nexus upload by **enpinion**).
 
@@ -59,8 +59,8 @@ Normal-play profile.
 
 - Hooks only the relevant imports belonging to SkyrimSE.exe
 - Considers only eligible read-only synchronous BSA/BA2 opens
-- Removes `FILE_FLAG_NO_BUFFERING`
-- Applies `FILE_FLAG_RANDOM_ACCESS` to eligible archives
+- Removes `FILE_FLAG_NO_BUFFERING` — this is the only change it makes
+- `FILE_FLAG_RANDOM_ACCESS` **off by default since 2.1.0**
 - Warm cache disabled
 - Hardware profiling disabled
 - Automatic tuning disabled
@@ -68,19 +68,20 @@ Normal-play profile.
 - Working-set expansion disabled
 - Power-throttling changes disabled
 
-The random-access flag is a Windows caching hint, not a guaranteed performance switch. It is used only for eligible archives because archive access may involve seeking between internal records.
+**Why the random-access hint was turned off in 2.1.0.** `FILE_FLAG_RANDOM_ACCESS` is a Windows caching hint, not a performance switch. It *disables* the cache manager's read-ahead, where the `FILE_FLAG_SEQUENTIAL_SCAN` hint it displaces *enlarges* it. On a real 1.6.1170 session the plugin logged `opens=26162 patched=6481 no_buffering_stripped=0` — the engine never set `FILE_FLAG_NO_BUFFERING` on that runtime, so the read-ahead hint was the only live effect the plugin had, applied to thousands of archive opens per minute, with no benchmark behind it. An unmeasured change at that rate is not a safe default. Set `bPreferRandomAccessOnArchives=1` yourself if you can measure a repeatable win, or install the Experimental profile, which keeps it on for A/B comparison.
+
+If your runtime never sets `FILE_FLAG_NO_BUFFERING`, Safe now correctly does nothing at all, and the log says so in plain words.
 
 ### 2. Minimal — troubleshooting
 
 Same narrow executable-only hook and the same safety gates as Safe.
 
-It only removes `FILE_FLAG_NO_BUFFERING` from eligible archive reads. It does **not** add the random-access hint and does not enable any experimental process, hardware, or warm-cache features.
+Since 2.1.0 turned the random-access hint off in Safe too, Minimal is behaviourally identical to Safe. It differs only in that the periodic statistics line is not written to the log and every warm-cache budget is hard-zeroed.
 
 Choose Minimal when:
 
-- You want the smallest possible behavioural change
+- You want the quietest possible install
 - You are investigating a compatibility concern
-- You want to compare stripping NO_BUFFERING alone against Safe
 
 ### 3. Experimental — unproven
 
@@ -88,6 +89,7 @@ Includes the archive policy used by Safe but also enables features that have **n
 
 It enables:
 
+- **`FILE_FLAG_RANDOM_ACCESS` on eligible archives** — the hint Safe turned off in 2.1.0, kept here so you can A/B it
 - **Process-wide Detours interception** rather than the narrow SkyrimSE.exe import hook
 - **Bounded speculative warm cache**
 - **Hardware profiling and automatic warmer reduction**
@@ -194,6 +196,14 @@ The plugin does not store data in Skyrim saves. To remove it, uninstall the mod 
 
 ## Version history
 
+### 2.1.0
+
+- **`bPreferRandomAccessOnArchives` now ships off in Safe.** Evidence: a real 1.6.1170 session logged `opens=26162 patched=6481 no_buffering_stripped=0`, so the engine never set `FILE_FLAG_NO_BUFFERING` and the read-ahead-disabling hint was the plugin's only live effect. It has never been benchmarked as a win.
+- Added a statistics snapshot to the log that states in plain words when the plugin changed nothing on your runtime, instead of leaving you to interpret the counters.
+- Minimal is now behaviourally identical to Safe and is documented as such.
+- Experimental keeps the random-access hint on so the two profiles can be A/B compared on the same save.
+- No change to hook scope, safety gates, eligibility rules or the DirectStorage backend (still disabled).
+
 ### 2.0.0
 
 - Unified Nexus, DLL and GitHub version numbering
@@ -226,7 +236,7 @@ AI tools assisted portions of development, auditing and documentation. AI assist
 
 ## Verifying a build
 
-The plugin DLL distributed in the 2.0.0 compliance package is the unchanged GitHub Actions build produced from tag `v2.0.0`. Later compliance revisions update only the surrounding FOMOD documentation, licensing, and package metadata; their ZIP hashes are published separately. The PDB is **not** inside the FOMOD zip.
+The plugin DLL distributed in the 2.1.0 package is the unchanged GitHub Actions build produced from tag `v2.1.0`. Later compliance revisions update only the surrounding FOMOD documentation, licensing, and package metadata; their ZIP hashes are published separately. The PDB is **not** inside the FOMOD zip.
 
 ```
 dumpbin /exports NextGenDiskCache.dll   →  only SKSEPlugin_Load/Query/Version

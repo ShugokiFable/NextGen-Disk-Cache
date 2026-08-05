@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
-  <moduleName>NextGen Disk Cache 2.0.0</moduleName>
+  <moduleName>NextGen Disk Cache 2.1.0</moduleName>
   <requiredInstallFiles>
     <folder source="Core" destination="" priority="0" />
   </requiredInstallFiles>
@@ -11,7 +11,9 @@
         <group name="Safe or Experimental" type="SelectExactlyOne">
           <plugins order="Explicit">
             <plugin name="Safe (Recommended)">
-              <description>The normal-play profile. Hooks only the relevant imports belonging to SkyrimSE.exe. Considers only eligible read-only synchronous .bsa/.ba2 opens: removes FILE_FLAG_NO_BUFFERING and applies FILE_FLAG_RANDOM_ACCESS to those archives.
+              <description>The normal-play profile. Hooks only the relevant imports belonging to SkyrimSE.exe. Considers only eligible read-only synchronous .bsa/.ba2 opens, and the single change it makes is removing FILE_FLAG_NO_BUFFERING when the engine set it.
+
+As of 2.1.0 the FILE_FLAG_RANDOM_ACCESS hint ships OFF. That hint DISABLES the Windows read-ahead that the flag it replaces enlarges, it has never been benchmarked as a win, and on runtime 1.6.1170 it was the only live effect this plugin had. If your runtime never sets FILE_FLAG_NO_BUFFERING, this profile deliberately does nothing at all - and the log says so.
 
 Saves, cosaves, journals, databases, logs, temp files, plugins, loose meshes/textures/audio, config files and unknown extensions are never touched. Write, create, truncate, overlapped, write-through and delete-on-close handles are never modified.
 
@@ -24,7 +26,7 @@ Warm cache, hardware profiling, automatic tuning, process-wide interception, wor
               </typeDescriptor>
             </plugin>
             <plugin name="Minimal (troubleshooting)">
-              <description>Same narrow executable-only hook and safety gates as Safe. Only removes FILE_FLAG_NO_BUFFERING from eligible archive reads. Does not add the random-access hint and does not enable experimental process, hardware or warm-cache features. Use when you want the smallest behavioural change or are investigating a compatibility concern.</description>
+              <description>Same narrow executable-only hook and safety gates as Safe. Since 2.1.0 turned the random-access hint off in Safe as well, this profile is behaviourally identical to Safe; it differs only in that the periodic statistics line is not written to the log and all warm-cache budgets are hard-zeroed. Pick it if you want the quietest possible install while investigating a compatibility concern.</description>
               <files>
                 <folder source="Profiles\Minimal" destination="SKSE\Plugins" priority="10" />
               </files>
@@ -35,6 +37,7 @@ Warm cache, hardware profiling, automatic tuning, process-wide interception, wor
             <plugin name="Experimental (unproven - benchmark it)">
               <description>Includes the archive policy used by Safe, plus features that have NOT been demonstrated to improve Skyrim performance:
 
+- FILE_FLAG_RANDOM_ACCESS applied to eligible archives (this is the flag Safe turned off in 2.1.0; it disables Windows read-ahead)
 - Process-wide Detours interception instead of the narrow SkyrimSE.exe import hook
 - Bounded speculative warm cache: 512 MB total, 8 MB per archive, 128 archives max, one low-priority worker, 60-second delay
 - Hardware profiling and automatic warmer reduction (auto-tune may only reduce configured limits)

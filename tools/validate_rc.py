@@ -8,7 +8,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 PROFILES = ["SafeDefault", "Minimal", "ExperimentalWarmCache"]
 
 
