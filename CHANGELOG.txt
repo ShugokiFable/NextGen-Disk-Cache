@@ -1,6 +1,21 @@
 NextGen Disk Cache - Public Release History
 ===========================================
 
+2.1.0
+-----
+- Safe profile no longer applies FILE_FLAG_RANDOM_ACCESS. That hint disables the
+  Windows cache manager's read-ahead, it has never been benchmarked as a win, and
+  a real 1.6.1170 session logged opens=26162 patched=6481 no_buffering_stripped=0,
+  proving the engine never sets FILE_FLAG_NO_BUFFERING on that runtime and that the
+  read-ahead hint was the only live effect the plugin had.
+- Added a log statistics snapshot that states in plain words when the plugin made
+  no difference on your runtime.
+- Minimal is now behaviourally identical to Safe; documented rather than removed so
+  existing installs keep working.
+- Experimental keeps the random-access hint enabled for A/B comparison.
+- No change to hook scope, safety gates, archive eligibility rules, or the
+  DirectStorage backend (still disabled and not shipped).
+
 2.0.0
 -----
 - Unified Nexus, DLL and GitHub version numbering.

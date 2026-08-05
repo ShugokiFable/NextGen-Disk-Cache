@@ -84,8 +84,8 @@
 // Nexus uploads (1.1.2 / 1.1.3) used a separate numbering scheme from the git
 // tags (1.3.0 / 1.4.x), which made user bug reports impossible to map onto a
 // commit. From here the DLL, the tag, and the Nexus file all read the same.
-#define PLUGIN_VERSION ((2u << 16) | (0u << 8) | 0u) // 2.0.0
-#define PLUGIN_VERSION_STRING "2.0.0"
+#define PLUGIN_VERSION ((2u << 16) | (1u << 8) | 0u) // 2.1.0
+#define PLUGIN_VERSION_STRING "2.1.0"
 
 // ---------------------------------------------------------------------------
 // Settings (INI)
@@ -105,7 +105,14 @@ struct Settings {
 	// Broad mode may include known loose assets, but unknown extensions are
 	// never modified.
 	bool conservativeHookScope = true;
-	bool preferRandomAccessOnArchives = true;
+	// Ships OFF as of 2.1.0. FILE_FLAG_RANDOM_ACCESS is a caching hint that
+	// DISABLES the cache manager's read-ahead, where FILE_FLAG_SEQUENTIAL_SCAN
+	// (which it replaced) enlarges it. Measured on runtime 1.6.1170, this hint
+	// was the ONLY live effect this plugin had - the engine never set
+	// FILE_FLAG_NO_BUFFERING, so nothing was there to strip - and no benchmark
+	// has ever shown it helps. An unmeasured change applied to thousands of
+	// archive opens per minute is not a safe default.
+	bool preferRandomAccessOnArchives = false;
 	bool leaveSequentialOnLogs = true;
 
 	// Process-scoped hints: SetProcessInformation(GetCurrentProcess(), ...)
