@@ -1428,6 +1428,41 @@ static std::atomic<size_t> g_warmNext{0};
 static std::atomic<int64_t> g_warmBudgetLeft{0};
 static std::atomic<uint64_t> g_warmBytes{0};
 static std::atomic<uint32_t> g_warmFilesTouched{0};
+
+// Emitted from both the warm-cache path and the warmer-disabled one-shot worker.
+// The advisory exists because the headline feature can be silently inert: the
+// premise inherited from Disk Cache Enabler is that the engine opens archives
+// with FILE_FLAG_NO_BUFFERING, and on runtimes where it does not, stripping that
+// flag changes nothing and the RANDOM_ACCESS hint is the only live effect.
+// Measured on 1.6.1170: opens=26162 patched=6481 no_buffering_stripped=0.
+static void LogStatsSnapshot()
+{
+	if (!g_settings.logStatsAfterWarm)
+		return;
+
+	const uint64_t patched = g_opensPatched.load();
+	const uint64_t stripped = g_noBufferingStripped.load();
+	Log("Stats snapshot: opens=%llu patched=%llu no_buffering_stripped=%llu "
+		"in_scope_safety_gated=%llu warm_read=%llu MB",
+		(unsigned long long)g_opensTotal.load(),
+		(unsigned long long)patched,
+		(unsigned long long)stripped,
+		(unsigned long long)g_opensSafetyGated.load(),
+		(unsigned long long)(g_warmBytes.load() >> 20));
+
+	if (patched && !stripped) {
+		Log("NOTE: no archive open on this runtime carried FILE_FLAG_NO_BUFFERING, "
+			"so the cache-restoring part of this plugin changed nothing. The only "
+			"live change was the FILE_FLAG_RANDOM_ACCESS hint on %llu archive opens, "
+			"which is an unbenchmarked caching hint that disables OS read-ahead. "
+			"Set bPreferRandomAccessOnArchives=0 (or use the Minimal profile) to make "
+			"the plugin a no-op, then compare.",
+			(unsigned long long)patched);
+	} else if (!patched) {
+		Log("NOTE: no eligible archive open was modified. With the Safe/Minimal "
+			"profile this plugin is doing nothing on this setup.");
+	}
+}
 static const WarmPlan* g_warmPlan = nullptr;
 
 static uint64_t WarmMappedPrefetch(HANDLE file, uint64_t fileBytes, uint64_t budgetBytes)
@@ -1710,15 +1745,7 @@ static void WarmCacheCoordinator()
 		g_warmFilesTouched.load(),
 		(unsigned long long)elapsed,
 		plan.threads, plan.threads == 1 ? "" : "s");
-	if (g_settings.logStatsAfterWarm) {
-		Log("Stats snapshot: opens=%llu patched=%llu no_buffering_stripped=%llu "
-			"in_scope_safety_gated=%llu warm_read=%llu MB",
-			(unsigned long long)g_opensTotal.load(),
-			(unsigned long long)g_opensPatched.load(),
-			(unsigned long long)g_noBufferingStripped.load(),
-			(unsigned long long)g_opensSafetyGated.load(),
-			(unsigned long long)(g_warmBytes.load() >> 20));
-	}
+	LogStatsSnapshot();
 }
 
 static void DetectSiblingPlugins()
@@ -1980,13 +2007,7 @@ SKSEAPI bool SKSEPlugin_Load(const SKSEInterface* skse)
 				std::this_thread::sleep_for(std::chrono::milliseconds(100));
 			if (g_shutdown.load(std::memory_order_relaxed))
 				return;
-			Log("Stats snapshot: opens=%llu patched=%llu no_buffering_stripped=%llu "
-				"in_scope_safety_gated=%llu warm_read=%llu MB",
-				(unsigned long long)g_opensTotal.load(),
-				(unsigned long long)g_opensPatched.load(),
-				(unsigned long long)g_noBufferingStripped.load(),
-				(unsigned long long)g_opensSafetyGated.load(),
-				(unsigned long long)(g_warmBytes.load() >> 20));
+			LogStatsSnapshot();
 		}).detach();
 	}
 
