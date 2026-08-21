@@ -37,7 +37,7 @@ jobs:
         run: .\package-release.ps1 -SkipBuild
 
       - name: Upload Nexus-ready artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: NextGenDiskCache-2.1.0-FOMOD
           path: |
@@ -45,7 +45,7 @@ jobs:
             dist/NextGenDiskCache-2.1.0-SHA256.txt
 
       - name: Upload symbols separately
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: NextGenDiskCache-2.1.0-symbols
           path: build/symbols/NextGenDiskCache.pdb
