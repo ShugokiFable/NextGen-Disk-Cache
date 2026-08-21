@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: NuGet/setup-nuget@v2
+      - uses: NuGet/setup-nuget@v4
 
       - name: Validate source bundle
         run: python tools/validate_rc.py
