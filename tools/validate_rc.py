@@ -202,7 +202,7 @@ def main() -> int:
             "packager must not ship dstorage runtime DLLs")
 
     workflow = (ROOT / ".github/workflows/build-release.yml").read_text(encoding="utf-8")
-    for token in ["windows-2022", "NuGet/setup-nuget@v2",
+    for token in ["windows-2022", "NuGet/setup-nuget@",  # any major; Dependabot bumps must stay green
                   f"NextGenDiskCache-{VERSION}-FOMOD.zip",
                   "build/symbols/NextGenDiskCache.pdb",
                   "python tools/validate_rc.py"]:
